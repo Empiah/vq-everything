@@ -152,7 +152,7 @@ app.title = "VQ Everything"
 app.server.register_blueprint(google_bp, url_prefix="/login")
 
 # Set Flask secret key for session management and OAuth
-app.server.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change-me")
+app.server.secret_key = os.getenv("FLASK_SECRET_KEY")
 
 # Helper to get current user info
 from flask import session as flask_session
