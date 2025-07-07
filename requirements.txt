@@ -1,0 +1,9 @@
+dash
+plotly
+dash-bootstrap-components
+sqlalchemy
+flask
+dotenv
+flask-dance
+gunicorn
+python-dotenv
