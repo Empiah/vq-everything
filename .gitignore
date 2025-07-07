@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+
+# Environment
+.env
+
+# SQLite DB
+submissions.db
+
+# VSCode
+.vscode/
+
+# Node
+node_modules/
+
+# Dash/Plotly
+*.log
+
+# Other
+*.sqlite3
+*.db
+
+# Ignore frontend build artifacts
+frontend/.next/
+frontend/node_modules/
