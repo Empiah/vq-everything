@@ -1,22 +1,61 @@
-# Value and Quality Everything – Backend
+# Value and Quality Everything
 
-This is a Python FastAPI backend for the Value and Quality Everything website.
+A modern Dash web app for collecting and visualizing user submissions on a 3x3 value/quality scatter plot grid. Features Google login, SQLite storage, and a beautiful Plotly chart.
 
 ## Features
-- Stores user submissions for a scatter plot
-- Each submission: value (float, 0-100), quality (float, 0-100), type (str), category (str), name (str, max 100 chars), location (str), user_id (for future Google login)
-- Uses SQLite as the database
-- Endpoints:
-  - `POST /submissions` – create a new submission
-  - `GET /submissions` – list all submissions
-- CORS enabled for frontend integration
+
+- Google OAuth 2.0 login (secure, no passwords stored)
+- Submission form: value (0-100), quality (0-100), type, category, name, location
+- All data stored in SQLite (local file, not in git)
+- Interactive 3x3 scatter plot grid (Plotly)
+- Filter by category and user ("All Submissions" or "My Submissions")
+- Responsive, mobile-friendly UI (Dash + Bootstrap)
+- All secrets loaded from `.env` (never in git)
 
 ## Setup
-1. Install dependencies:
+
+1. **Clone the repo:**
+
    ```sh
-   pip install -r backend/requirements.txt
+   git clone https://github.com/yourusername/your-repo-name.git
+   cd your-repo-name
    ```
-2. Run the server:
+
+2. **Create a virtual environment (recommended):**
+
    ```sh
-   uvicorn backend.main:app --reload
+   python3 -m venv .venv
+   source .venv/bin/activate
    ```
+
+3. **Install dependencies:**
+
+   ```sh
+   pip install -r requirements.txt
+   ```
+
+4. **Create a `.env` file:**
+   - Copy `.env.example` to `.env` and fill in your Google OAuth credentials and a strong Flask secret key.
+
+5. **Run the app locally:**
+
+   ```sh
+   python app.py
+   ```
+
+   The app will be available at [http://127.0.0.1:8050](http://127.0.0.1:8050)
+
+## Deploying to Production (Heroku/Render/etc.)
+
+- Use the provided `Procfile` and `requirements.txt`.
+- Set all environment variables (`.env` values) in your host's dashboard.
+- Run with `gunicorn app:app.server` (see Procfile).
+
+## Security
+
+- `.env` and `submissions.db` are excluded from git by `.gitignore`.
+- Never commit secrets or the database to your repo.
+
+## License
+
+MIT
