@@ -20,7 +20,3 @@ This is a Python FastAPI backend for the Value and Quality Everything website.
    ```sh
    uvicorn backend.main:app --reload
    ```
-
-## Notes
-- The `user_id` field is included for future Google login integration, but is not required for now.
-- Adjust CORS settings in `main.py` for production use.
