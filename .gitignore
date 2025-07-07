@@ -9,6 +9,7 @@ __pycache__/
 
 # Environment
 .env
+.venv/
 
 # SQLite DB
 submissions.db
@@ -16,16 +17,9 @@ submissions.db
 # VSCode
 .vscode/
 
-# Node
-node_modules/
-
 # Dash/Plotly
 *.log
 
 # Other
 *.sqlite3
 *.db
-
-# Ignore frontend build artifacts
-frontend/.next/
-frontend/node_modules/
