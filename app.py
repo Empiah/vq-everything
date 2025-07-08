@@ -38,7 +38,10 @@ class Submission(Base):
     location = sa.Column(sa.String, nullable=False)
     user_id = sa.Column(sa.String, nullable=True)  # Changed from Integer to String for email
 
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print(f"[WARNING] Could not create tables: {e}")
 
 # --- Helper: get all submissions ---
 def get_submissions():
