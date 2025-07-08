@@ -556,4 +556,4 @@ def render_user_table(show_mine, login_state, filter_category):
     return None
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)
