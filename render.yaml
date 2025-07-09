@@ -3,7 +3,7 @@ services:
     name: vq-everything
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:server
+    startCommand: gunicorn app:app
     envVars:
       - key: GOOGLE_OAUTH_CLIENT_ID
         sync: false

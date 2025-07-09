@@ -65,7 +65,7 @@ Make sure your latest code is committed and pushed to a GitHub repository.
   ```
 - For **Start Command**, enter:
   ```sh
-  gunicorn app:server
+  gunicorn app:app
   ```
 - For **Instance Type**, the free tier is fine for most use cases
 
