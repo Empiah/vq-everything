@@ -21,8 +21,8 @@ from dash import dash_table  # Updated import for dash_table
 # Load environment variables from .env
 load_dotenv()
 
-# --- Database setup (SQLite only) ---
-DATABASE_URL = "sqlite:///./submissions.db"
+# --- Database setup (SQLite, persistent for Render) ---
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./submissions.db")
 engine = sa.create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()

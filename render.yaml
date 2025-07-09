@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: vq-everything
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:server
+    envVars:
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: FLASK_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        value: sqlite:////data/submissions.db
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
