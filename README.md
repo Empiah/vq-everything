@@ -45,11 +45,57 @@ A modern Dash web app for collecting and visualizing user submissions on a 3x3 v
 
    The app will be available at [http://127.0.0.1:8050](http://127.0.0.1:8050)
 
-## Deploying to Production (Heroku/Render/etc.)
+## Deploying to Production (Render.com Example)
 
-- Use the provided `Procfile` and `requirements.txt`.
-- Set all environment variables (`.env` values) in your host's dashboard.
-- Run with `gunicorn app:app.server` (see Procfile).
+Render.com is a simple, reliable, and affordable way to deploy Python web apps like this one. The free tier is great for demos and light use.
+
+### 1. Push your code to GitHub
+
+Make sure your latest code is committed and pushed to a GitHub repository.
+
+### 2. Create a new Web Service on Render
+
+- Go to https://dashboard.render.com/
+- Click **New +** > **Web Service**
+- Connect your GitHub account and select your repo
+- For **Environment**, choose `Python 3`
+- For **Build Command**, enter:
+  ```sh
+  pip install -r requirements.txt
+  ```
+- For **Start Command**, enter:
+  ```sh
+  gunicorn app:server
+  ```
+- For **Instance Type**, the free tier is fine for most use cases
+
+### 3. Add Environment Variables
+
+- In the Render dashboard, go to your service's **Environment** tab
+- Add all variables from your `.env` (except secrets—never commit `.env` to git)
+- Example:
+  - `GOOGLE_OAUTH_CLIENT_ID=...`
+  - `GOOGLE_OAUTH_CLIENT_SECRET=...`
+  - `FLASK_SECRET_KEY=...`
+
+### 4. Persistent SQLite Storage (Optional)
+
+By default, SQLite data will be lost on redeploy. For persistent storage:
+- Go to the **Disks** tab in your Render service
+- Add a disk (e.g., `/data`, 1GB is enough)
+- In your code, change the database URL to:
+  ```python
+  DATABASE_URL = "sqlite:////data/submissions.db"
+  ```
+- Commit and push this change
+- Your data will now persist across deploys
+
+### 5. Deploy!
+
+- Click **Manual Deploy** or push to your repo to trigger a deploy
+- Your app will be live at the provided URL
+
+---
 
 ## Security
 
