@@ -17,6 +17,7 @@ from flask import session, redirect, url_for
 from flask_dance.contrib.google import make_google_blueprint, google
 from dotenv import load_dotenv
 from dash import dash_table  # Updated import for dash_table
+from datetime import datetime
 
 # Load environment variables from .env
 load_dotenv()
@@ -37,6 +38,7 @@ class Submission(Base):
     name = sa.Column(sa.String(100), nullable=False)
     location = sa.Column(sa.String, nullable=False)
     user_id = sa.Column(sa.String, nullable=True)  # Changed from Integer to String for email
+    date_submitted = sa.Column(sa.DateTime, nullable=True, default=datetime.utcnow)
 
 try:
     Base.metadata.create_all(bind=engine)
@@ -57,6 +59,7 @@ def get_user_submissions(user_id):
 def add_submission(data):
     user_id = get_current_user_id()
     data["user_id"] = user_id
+    data["date_submitted"] = datetime.utcnow()
     with SessionLocal() as db:
         sub = Submission(**data)
         db.add(sub)
@@ -103,7 +106,16 @@ def get_user_table(user_id=None, show_mine=True, filter_category="All"):
     if filter_category and filter_category != "All":
         subs = [s for s in subs if s.category == filter_category]
     data = [
-        {"id": s.id, "value": s.value, "quality": s.quality, "type": s.type, "category": s.category, "name": s.name, "location": s.location, "user_id": s.user_id, "remove": "Delete"}
+        {"id": s.id,
+         "value": s.value,
+         "quality": s.quality,
+         "type": s.type,
+         "category": s.category,
+         "name": s.name,
+         "location": s.location,
+         "user_id": get_user_initials(s.user_id),
+         "date_submitted": s.date_submitted.strftime("%Y-%m-%d") if getattr(s, "date_submitted", None) else "-",
+         "remove": "Delete"}
         for s in subs
     ]
     columns = [
@@ -114,8 +126,9 @@ def get_user_table(user_id=None, show_mine=True, filter_category="All"):
         {"name": "Category", "id": "category"},
         {"name": "Name", "id": "name"},
         {"name": "Location", "id": "location"},
-        {"name": "User ID", "id": "user_id"},
-        {"name": "Remove", "id": "remove"},  # Removed 'presentation': 'button'
+        {"name": "User", "id": "user_id"},
+        {"name": "Date", "id": "date_submitted"},
+        {"name": "Remove", "id": "remove"},
     ]
     return dash_table.DataTable(
         data=data,
@@ -179,8 +192,17 @@ def get_current_user():
 def get_current_user_id():
     user = get_current_user()
     if user:
-        return user.get("email")
+        # Use Google name instead of email for privacy
+        return user.get("name")
     return None
+
+def get_user_initials(name):
+    if not name:
+        return "?"
+    parts = name.strip().split()
+    if len(parts) == 1:
+        return parts[0][0].upper()
+    return (parts[0][0] + parts[-1][0]).upper()
 
 prussian_blue = "#003153"
 
@@ -213,7 +235,7 @@ def get_initial_figure():
         fig.add_trace(go.Scatter(
             x=[s.value for s in subs],
             y=[s.quality for s in subs],
-            text=[f"{s.name}<br>{s.category}" for s in subs],
+            text=[f"{s.name}<br>{s.category}<br>Value: {s.value:.2f}<br>Quality: {s.quality:.2f}" for s in subs],
             hoverinfo="text",
             mode="markers",
             marker={"size": 14, "color": prussian_blue, "line": {"width": 2, "color": "#fff"}},
@@ -273,6 +295,20 @@ app.layout = dbc.Container([
     dcc.Location(id="url", refresh=True),
     dcc.Store(id="login-state"),
     dcc.Store(id="show-mine-toggle", data=True),
+    dcc.Store(id="selected-restaurant"),  # Store for clicked restaurant info
+    dbc.Modal(
+        [
+            dbc.ModalHeader(dbc.ModalTitle(id="profile-title")),
+            dbc.ModalBody(id="profile-body"),
+            dbc.ModalFooter(
+                dbc.Button("Close", id="close-profile-modal", className="ms-auto", n_clicks=0)
+            ),
+        ],
+        id="profile-modal",
+        is_open=False,
+        size="lg",
+        centered=True,
+    ),
     html.H1("VQ Everything", style={"color": prussian_blue, "fontWeight": 700, "marginTop": 30}),
     html.Div(id="login-section"),
     dbc.Row([
@@ -297,7 +333,7 @@ app.layout = dbc.Container([
                 dcc.Dropdown(
                     id="category-filter",
                     options=[{"label": c, "value": c} for c in [
-                        "All", "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Other"
+                        "All", "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Japanese", "Other"
                     ]],
                     value="All",
                     clearable=False,
@@ -321,7 +357,7 @@ app.layout = dbc.Container([
                         dcc.Dropdown(id="type", options=[{"label": "Restaurant", "value": "Restaurant"}], value="Restaurant", searchable=True),
                         dbc.Label("Category"),
                         dcc.Dropdown(id="category", options=[{"label": c, "value": c} for c in [
-                            "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Other"
+                            "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Japanese", "Other"
                         ]], value="Steak", searchable=True),
                         dbc.Label("Name"),
                         dbc.Input(id="name", type="text", maxLength=100, required=True),
@@ -347,7 +383,8 @@ app.layout = dbc.Container([
             {"name": "Category", "id": "category"},
             {"name": "Name", "id": "name"},
             {"name": "Location", "id": "location"},
-            {"name": "User ID", "id": "user_id"},
+            {"name": "User", "id": "user_id"},
+            {"name": "Date", "id": "date_submitted"},
             {"name": "Remove", "id": "remove"},
         ],
         style_table={"display": "none"},  # Use style_table instead of style
@@ -437,7 +474,7 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
         fig.add_trace(go.Scatter(
             x=[s.value for s in avg_subs],
             y=[s.quality for s in avg_subs],
-            text=[f"{s.name}<br>{s.category}" for s in avg_subs],
+            text=[f"{s.name}<br>{s.category}<br>Value: {s.value:.2f}<br>Quality: {s.quality:.2f}" for s in avg_subs],
             hoverinfo="text",
             mode="markers",
             marker={"size": 14, "color": prussian_blue, "line": {"width": 2, "color": "#fff"}},
@@ -555,8 +592,66 @@ def logout():
 def render_user_table(show_mine, login_state, filter_category):
     user_id = get_current_user_id()
     if show_mine and login_state and login_state.get("logged_in") and user_id:
+        # My Submissions: show table for logged-in user
         return get_user_table(user_id=user_id, show_mine=True, filter_category=filter_category)
+    elif not show_mine and login_state and login_state.get("logged_in") and user_id == ADMIN_EMAIL:
+        # All Submissions: show table for admin only
+        return get_user_table(user_id=None, show_mine=False, filter_category=filter_category)
     return None
+
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 
 if __name__ == "__main__":
     app.run(debug=False)
+
+@app.callback(
+    [Output("profile-modal", "is_open"),
+     Output("profile-title", "children"),
+     Output("profile-body", "children"),
+     Output("selected-restaurant", "data")],
+    [Input("scatter-plot", "clickData"),
+     Input("close-profile-modal", "n_clicks")],
+    [State("profile-modal", "is_open"),
+     State("selected-restaurant", "data")],
+    prevent_initial_call=True
+)
+def display_profile_modal(clickData, close_clicks, is_open, selected_data):
+    ctx = callback_context
+    triggered = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else None
+    if triggered == "close-profile-modal" and is_open:
+        return False, dash.no_update, dash.no_update, None
+    if triggered == "scatter-plot" and clickData:
+        point = clickData["points"][0]
+        # Extract identifying info (name, category, etc.) from customdata or text
+        # Here, we assume text is formatted as 'Name<br>Category<br>Value: ...<br>Quality: ...'
+        text = point.get("text", "")
+        lines = text.split("<br>")
+        name = lines[0] if len(lines) > 0 else ""
+        category = lines[1] if len(lines) > 1 else ""
+        # Query DB for all submissions for this restaurant
+        with SessionLocal() as db:
+            subs = db.query(Submission).filter(Submission.name == name, Submission.category == category).all()
+        # Build modal content
+        if not subs:
+            body = html.Div("No submissions found.")
+        else:
+            # Sort by date_submitted descending
+            subs = sorted(subs, key=lambda s: s.date_submitted or datetime.min, reverse=True)
+            user_rows = [
+                html.Tr([
+                    html.Td(get_user_initials(s.user_id)),
+                    html.Td(f"{s.value:.0f}"),
+                    html.Td(f"{s.quality:.0f}"),
+                    html.Td(s.date_submitted.strftime("%Y-%m-%d") if s.date_submitted else "-")
+                ]) for s in subs
+            ]
+            body = html.Div([
+                html.H5(f"Category: {category}"),
+                html.H6("User Submissions (most recent first):"),
+                dbc.Table([
+                    html.Thead(html.Tr([html.Th("User"), html.Th("Value"), html.Th("Quality"), html.Th("Date")])) ,
+                    html.Tbody(user_rows)
+                ], bordered=True, hover=True, size="sm"),
+            ])
+        return True, name, body, {"name": name, "category": category}
+    return is_open, dash.no_update, dash.no_update, selected_data

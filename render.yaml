@@ -13,6 +13,8 @@ services:
         sync: false
       - key: DATABASE_URL
         value: sqlite:////data/submissions.db
+      - key: ADMIN_EMAIL
+        sync: false
     disk:
       name: data
       mountPath: /data
