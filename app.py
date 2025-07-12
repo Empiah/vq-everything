@@ -13,18 +13,23 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objs as go
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker, declarative_base
-from flask import session, redirect, url_for
+from flask import session, redirect as flask_redirect, url_for
 from flask_dance.contrib.google import make_google_blueprint, google
 from dotenv import load_dotenv
 from dash import dash_table  # Updated import for dash_table
 from datetime import datetime
+from dash.dependencies import ALL
 
 # Load environment variables from .env
 load_dotenv()
 
 # --- Database setup (SQLite, persistent for Render) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./submissions.db")
-engine = sa.create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = sa.create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    isolation_level="AUTOCOMMIT" if DATABASE_URL.startswith("sqlite") else None
+)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -39,6 +44,16 @@ class Submission(Base):
     location = sa.Column(sa.String, nullable=False)
     user_id = sa.Column(sa.String, nullable=True)  # Changed from Integer to String for email
     date_submitted = sa.Column(sa.DateTime, nullable=True, default=datetime.utcnow)
+
+class SubmissionUpvote(Base):
+    __tablename__ = "submission_upvotes"
+    id = sa.Column(sa.Integer, primary_key=True, index=True)
+    submission_id = sa.Column(sa.Integer, sa.ForeignKey("submissions.id"), nullable=False)
+    category = sa.Column(sa.String, nullable=False)  # Store category for reference
+    type = sa.Column(sa.String, nullable=False)      # Store type for reference
+    voter_id = sa.Column(sa.String, nullable=False)  # user name or email
+    timestamp = sa.Column(sa.DateTime, default=datetime.utcnow)
+    __table_args__ = (sa.UniqueConstraint('submission_id', 'voter_id', name='_submission_voter_uc'),)
 
 try:
     Base.metadata.create_all(bind=engine)
@@ -72,6 +87,9 @@ def add_submission(data):
     with SessionLocal() as db:
         sub = Submission(**data)
         db.add(sub)
+        db.commit()
+        # Automatically upvote own submission
+        db.add(SubmissionUpvote(submission_id=sub.id, voter_id=user_id, category=data["category"], type=data["type"]))
         db.commit()
 
 # --- Helper: delete all submissions ---
@@ -321,7 +339,7 @@ def get_login_section():
 app.layout = dbc.Container([
     dcc.Location(id="url", refresh=True),
     dcc.Store(id="login-state"),
-    dcc.Store(id="show-mine-toggle", data=True),
+    dcc.Store(id="show-mine-toggle", data=False),  # Default to False (All Submissions)
     dcc.Store(id="selected-restaurant"),  # Store for clicked restaurant info
     dbc.Modal(
         [
@@ -419,25 +437,87 @@ app.layout = dbc.Container([
     html.Div(id="user-table-container", style={"marginTop": 40, "paddingLeft": 20, "paddingRight": 20, "paddingBottom": 30}),
 ], fluid=True)
 
-# --- Callback to update login section and login state ---
-@app.callback(
-    Output("login-section", "children"),
-    Output("login-state", "data"),
-    Input("url", "pathname"),
-)
-def update_login_and_state(_):
-    user = get_current_user()
-    login_section = get_login_section()
-    return login_section, {"logged_in": bool(user)}
+# --- New weighting methodology for restaurant submissions ---
+def get_restaurant_weights(subs, vote_factor=1.0, date_factor=0.3):
+    N = len(subs)
+    if N == 0:
+        return [], []
+    base_weight = 1.0 / N
+    upvotes_list = [get_upvote_count(s.id) for s in subs]
+    avg_upvotes = sum(upvotes_list) / N if N else 1
+    now = datetime.utcnow()
+    date_scores = [get_date_weight(s, now=now) for s in subs]
+    avg_date_score = sum(date_scores) / N if N else 1
+    # Vote scalar: relative to average, but always >= 0.5
+    vote_scalars = [max(0.5, (v / avg_upvotes if avg_upvotes > 0 else 1.0)) for v in upvotes_list]
+    # Date scalar: relative to average, but always >= 0.5
+    date_scalars = [max(0.5, (d / avg_date_score if avg_date_score > 0 else 1.0)) for d in date_scores]
+    # Final score: base_weight * (1 + vote_factor * (vote_scalar-1)) * (1 + date_factor * (date_scalar-1))
+    final_scores = [
+        base_weight * (1 + vote_factor * (vs-1)) * (1 + date_factor * (ds-1))
+        for vs, ds in zip(vote_scalars, date_scalars)
+    ]
+    total_score = sum(final_scores)
+    if total_score == 0:
+        norm_weights = [100.0 / N] * N
+    else:
+        norm_weights = [(w / total_score) * 100 for w in final_scores]
+    return norm_weights, upvotes_list
 
-# --- Combined callback for scatter-plot and table remove ---
+def get_date_weight(sub, now=None):
+    """
+    Returns a recency weight for a submission.
+    More recent = higher weight. Exponential decay, 30 days half-life.
+    """
+    if not hasattr(sub, "date_submitted") or not sub.date_submitted:
+        return 1.0
+    if now is None:
+        now = datetime.utcnow()
+    days_ago = (now - sub.date_submitted).days
+    # Half-life of 30 days: weight = 0.5 ** (days_ago / 30)
+    return 0.5 ** (days_ago / 30)
+
+# --- Update main chart to use weights instead of averages ---
+def get_main_chart_subs(filter_category=None):
+    subs = get_submissions()
+    if filter_category and filter_category != "All":
+        subs = [s for s in subs if s.category == filter_category]
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for s in subs:
+        key = (s.name, s.category)
+        grouped[key].append(s)
+    chart_subs = []
+    chart_counts = []
+    for group in grouped.values():
+        norm_weights, _ = get_restaurant_weights(group)
+        total_weight = sum(norm_weights)
+        if total_weight == 0:
+            avg_value = sum(s.value for s in group) / len(group)
+            avg_quality = sum(s.quality for s in group) / len(group)
+        else:
+            avg_value = sum(s.value * w for s, w in zip(group, norm_weights)) / sum(norm_weights)
+            avg_quality = sum(s.quality * w for s, w in zip(group, norm_weights)) / sum(norm_weights)
+        s0 = group[0]
+        chart_subs.append(type('ChartSub', (), {
+            'name': s0.name,
+            'category': s0.category,
+            'type': s0.type,
+            'location': s0.location,
+            'value': avg_value,
+            'quality': avg_quality
+        }))
+        chart_counts.append(len(group))
+    return chart_subs, chart_counts
+
+# --- Update main chart callback ---
 @app.callback(
     Output("scatter-plot", "figure"),
     Output("user-table", "data"),
     Input("category-filter", "value"),
     Input("show-mine-toggle", "data"),
     Input("user-table", "active_cell"),
-    Input("submit-btn", "n_clicks"),  # Add submit as input
+    Input("submit-btn", "n_clicks"),
     State("user-table", "data"),
     State("login-state", "data"),
     State("value", "value"),
@@ -448,11 +528,17 @@ def update_login_and_state(_):
     State("location", "value"),
     State("category-filter", "value"),
     State("show-mine-toggle", "data"),
-    prevent_initial_call=True
+    # No prevent_initial_call so it runs on page load
 )
 def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_clicks, data, login_state, value, quality, type_, category, name, location, filter_category2, show_mine2):
     ctx = callback_context
-    user_id = get_current_user_id()
+    # Only get user_id if show_mine is True
+    user_id = None
+    if show_mine:
+        try:
+            user_id = get_current_user_id()
+        except Exception:
+            user_id = None
     # Determine if this is a remove action
     if ctx.triggered and ctx.triggered[0]["prop_id"].startswith("user-table.active_cell") and active_cell and active_cell.get("column_id") == "remove":
         row = data[active_cell["row"]]
@@ -477,13 +563,15 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
         if filter_category and filter_category != "All":
             subs = [s for s in subs if s.category == filter_category]
         avg_subs = get_averaged_subs(subs)
-        # Always recalculate table data
+        # Always recalculate table data, use initials for user_id
         new_data = [
-            {"id": s.id, "value": s.value, "quality": s.quality, "type": s.type, "category": s.category, "name": s.name, "location": s.location, "user_id": s.user_id, "remove": "Delete"}
+            {"id": s.id, "value": s.value, "quality": s.quality, "type": s.type, "category": s.category, "name": s.name, "location": s.location, "user_id": get_user_initials(s.user_id), "remove": "Delete"}
             for s in subs
         ]
+    # Use weighted subs for chart
+    chart_subs, chart_counts = get_main_chart_subs(filter_category)
     fig = go.Figure()
-    # Draw grid regions (flip axes)
+    # Draw grid regions (flip axes: Value on x, Quality on y)
     for i in range(3):
         for j in range(3):
             fig.add_shape(type="rect",
@@ -494,17 +582,18 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
                 line={"width": 1, "color": "#222"},
                 layer="below"
             )
+    # Draw bold grid lines (vertical for Value, horizontal for Quality)
     for k in range(1, 3):
         fig.add_shape(type="line", x0=k*100/3, x1=k*100/3, y0=0, y1=100, line={"color": "#222", "width": 2})
         fig.add_shape(type="line", y0=k*100/3, y1=k*100/3, x0=0, x1=100, line={"color": "#222", "width": 2})
-    if avg_subs:
+    if chart_subs:
         fig.add_trace(go.Scatter(
-            x=[s.value for s in avg_subs],
-            y=[s.quality for s in avg_subs],
-            text=[f"{s.name}<br>{s.category}<br>Value: {s.value:.0f}<br>Quality: {s.quality:.0f}" for s in avg_subs],
+            x=[s.value for s in chart_subs],
+            y=[s.quality for s in chart_subs],
+            text=[f"{s.name}<br>{s.category}<br>Value: {s.value:.1f}<br>Quality: {s.quality:.1f}<br>Submissions: {count}" for s, count in zip(chart_subs, chart_counts)],
             hoverinfo="text",
             mode="markers",
-            marker={"size": 14, "color": prussian_blue, "line": {"width": 2, "color": "#fff"}},
+            marker={"size": 14, "color": prussian_blue, "line": {"width": 2, "color": "#fff"}, "opacity": 1.0},
         ))
     fig.update_layout(
         autosize=True,
@@ -531,106 +620,17 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
         plot_bgcolor="#fff",
         paper_bgcolor="#fff",
         annotations=[
-            # Value (x) subtitles at the top (use yref='paper')
-            dict(x=1/6, y=1.02, text="Cheap", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
-            dict(x=0.5, y=1.02, text="Mkt. Like", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
-            dict(x=5/6, y=1.02, text="Expensive", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
-            # Quality (y) subtitles at the left, vertical (use xref='paper')
-            dict(x=-0.02, y=1/6, text="Low Quality", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
-            dict(x=-0.02, y=0.5, text="Mod Quality", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
-            dict(x=-0.02, y=5/6, text="High Quality", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=1/6, y=1.08, text="Cheap", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
+            dict(x=0.5, y=1.08, text="Mod Value", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
+            dict(x=5/6, y=1.08, text="Expensive", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
+            dict(x=-0.13, y=1/6, text="High Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=-0.13, y=0.5, text="Mod Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=-0.13, y=5/6, text="Low Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
         ]
     )
     return fig, new_data
 
-# --- Callback to enable/disable form and submit button based on login state ---
-@app.callback(
-    Output("value", "disabled"),
-    Output("quality", "disabled"),
-    Output("type", "disabled"),
-    Output("category", "disabled"),
-    Output("name", "disabled"),
-    Output("location", "disabled"),
-    Output("submit-btn", "disabled"),
-    Input("login-state", "data"),
-    Input("value", "value"),
-    Input("quality", "value"),
-    Input("type", "value"),
-    Input("category", "value"),
-    Input("name", "value"),
-    Input("location", "value"),
-)
-def toggle_form(login_state, value, quality, type_, category, name, location):
-    logged_in = login_state and login_state.get("logged_in", False)
-    form_disabled = not logged_in
-    submit_disabled = not (logged_in and value is not None and quality is not None and type_ and category and name and location)
-    return [form_disabled]*6 + [submit_disabled]
-
-# --- Callback to update show-mine-toggle store ---
-@app.callback(
-    Output("show-mine-toggle", "data"),
-    Input("show-mine-radio", "value"),
-)
-def update_show_mine_toggle(value):
-    return value
-
-# --- Callback to handle form submission ---
-@app.callback(
-    Output("form-alert", "children"),
-    Input("submit-btn", "n_clicks"),
-    State("value", "value"),
-    State("quality", "value"),
-    State("type", "value"),
-    State("category", "value"),
-    State("name", "value"),
-    State("location", "value"),
-    prevent_initial_call=True
-)
-def handle_form_submission(n_clicks, value, quality, type_, category, name, location):
-    if n_clicks:
-        if value is None or quality is None or not name:
-            return dbc.Alert("Please fill all required fields.", color="danger")
-        else:
-            add_submission({
-                "value": value,
-                "quality": quality,
-                "type": type_,
-                "category": category,
-                "name": name,
-                "location": location,
-            })
-            return dbc.Alert("Submission added!", color="success")
-    return dash.no_update
-
-# --- Logout route for Flask server ---
-from flask import session as flask_session
-@app.server.route("/logout")
-def logout():
-    flask_session.clear()
-    return redirect("/")
-
-# --- Callback to show/hide user-table based on show-mine-toggle ---
-@app.callback(
-    Output("user-table-container", "children"),
-    Input("show-mine-toggle", "data"),
-    Input("login-state", "data"),
-    Input("category-filter", "value"),
-)
-def render_user_table(show_mine, login_state, filter_category):
-    user_id = get_current_user_id()
-    if show_mine and login_state and login_state.get("logged_in") and user_id:
-        # My Submissions: show table for logged-in user
-        return get_user_table(user_id=user_id, show_mine=True, filter_category=filter_category)
-    elif not show_mine and login_state and login_state.get("logged_in") and user_id == ADMIN_EMAIL:
-        # All Submissions: show table for admin only
-        return get_user_table(user_id=None, show_mine=False, filter_category=filter_category)
-    return None
-
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
-
-if __name__ == "__main__":
-    app.run(debug=False)
-
+# --- Modal and upvote logic: weighted value/quality display above table, upvote system, no callback errors ---
 @app.callback(
     [Output("profile-modal", "is_open"),
      Output("profile-title", "children"),
@@ -649,8 +649,6 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
         return False, dash.no_update, dash.no_update, None
     if triggered == "scatter-plot" and clickData:
         point = clickData["points"][0]
-        # Extract identifying info (name, category, etc.) from customdata or text
-        # Here, we assume text is formatted as 'Name<br>Category<br>Value: ...<br>Quality: ...'
         text = point.get("text", "")
         lines = text.split("<br>")
         name = lines[0] if len(lines) > 0 else ""
@@ -658,27 +656,307 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
         # Query DB for all submissions for this restaurant
         with SessionLocal() as db:
             subs = db.query(Submission).filter(Submission.name == name, Submission.category == category).all()
-        # Build modal content
         if not subs:
             body = html.Div("No submissions found.")
         else:
-            # Sort by date_submitted descending
             subs = sorted(subs, key=lambda s: s.date_submitted or datetime.min, reverse=True)
-            user_rows = [
-                html.Tr([
+            user_id = get_current_user_id()
+            user_rows = []
+            all_values = [s.value for s in subs]
+            m = sum(all_values) / len(all_values) if all_values else 50
+            now = datetime.utcnow()
+            # Compute raw final weights
+            norm_weights, upvotes_list = get_restaurant_weights(subs)
+            # Weighted average for this restaurant (live)
+            total_weight = sum(norm_weights)
+            if total_weight == 0:
+                weighted_value = sum(s.value for s in subs) / len(subs)
+                weighted_quality = sum(s.quality for s in subs) / len(subs)
+            else:
+                weighted_value = sum(s.value * w for s, w in zip(subs, norm_weights)) / sum(norm_weights)
+                weighted_quality = sum(s.quality * w for s, w in zip(subs, norm_weights)) / sum(norm_weights)
+            # Normalize for opacity (0.2 to 1.0)
+            min_w, max_w = min(norm_weights), max(norm_weights)
+            def norm_opacity(w):
+                if max_w == min_w:
+                    return 1.0
+                return 0.2 + 0.8 * (w - min_w) / (max_w - min_w)
+            # Mini chart for this restaurant (same style as main chart)
+            mini_fig = go.Figure()
+            for i in range(3):
+                for j in range(3):
+                    mini_fig.add_shape(type="rect",
+                        x0=i*100/3, x1=(i+1)*100/3,
+                        y0=j*100/3, y1=(j+1)*100/3,
+                        fillcolor=region_colors[j][i],
+                        opacity=0.3,
+                        line={"width": 1, "color": "#222"},
+                        layer="below"
+                    )
+            for k in range(1, 3):
+                mini_fig.add_shape(type="line", x0=k*100/3, x1=k*100/3, y0=0, y1=100, line={"color": "#222", "width": 2})
+                mini_fig.add_shape(type="line", y0=k*100/3, y1=k*100/3, x0=0, x1=100, line={"color": "#222", "width": 2})
+            mini_fig.add_trace(go.Scatter(
+                x=[s.value for s in subs],
+                y=[s.quality for s in subs],
+                mode="markers",
+                marker={
+                    "size": 18,
+                    "color": prussian_blue,
+                    "opacity": [norm_opacity(w) for w in norm_weights],
+                    "line": {"width": 2, "color": "#fff"}
+                },
+                text=[f"{get_user_initials(s.user_id)}<br>Value: {s.value:.0f}<br>Quality: {s.quality:.0f}<br>Final Weight: {w:.2f}%" for s, w in zip(subs, norm_weights)],
+                hoverinfo="text",
+            ))
+            mini_fig.update_layout(
+                width=320, height=320,
+                margin={"l": 60, "r": 10, "t": 40, "b": 60},
+                xaxis={
+                    "range": [0, 100],
+                    "showticklabels": False,  # Hide axis values
+                    "showgrid": False,
+                    "zeroline": False,
+                    "title": "Value (%)",
+                    "title_standoff": 10,
+                },
+                yaxis={
+                    "range": [100, 0],
+                    "showticklabels": False,  # Hide axis values
+                    "showgrid": False,
+                    "zeroline": False,
+                    "title": "Quality (%)",
+                    "title_standoff": 10,
+                },
+                plot_bgcolor="#fff",
+                paper_bgcolor="#fff",
+                title={"text": "Mini Chart (This Restaurant)", "x": 0, "xanchor": "left", "font": {"size": 20, "color": prussian_blue}},
+                annotations=[]
+            )
+            for i, s in enumerate(subs):
+                upvotes = upvotes_list[i]
+                final_weight = norm_weights[i]
+                user_has_upvoted = has_user_upvoted(s.id, user_id) if user_id else False
+                upvote_btn = dbc.Button(
+                    [
+                        html.Span("▲", style={"color": prussian_blue if user_has_upvoted else "#aaa", "fontWeight": "bold", "fontSize": 18}),
+                        html.Span(f" {upvotes}", style={"marginLeft": 4, "color": prussian_blue if user_has_upvoted else "#aaa"})
+                    ],
+                    id={"type": "upvote-btn", "index": s.id},
+                    color="link",
+                    style={"padding": "0 8px", "minWidth": 0},
+                    n_clicks=0,
+                    disabled=False
+                )
+                user_rows.append(html.Tr([
                     html.Td(get_user_initials(s.user_id)),
                     html.Td(f"{s.value:.0f}"),
                     html.Td(f"{s.quality:.0f}"),
-                    html.Td(s.date_submitted.strftime("%Y-%m-%d") if s.date_submitted else "-")
-                ]) for s in subs
-            ]
+                    html.Td(s.date_submitted.strftime("%Y-%m-%d") if s.date_submitted else "-"),
+                    html.Td(f"{final_weight:.1f}%", style={"color": prussian_blue, "fontWeight": 600}),
+                    html.Td(upvote_btn),
+                ]))
             body = html.Div([
                 html.H5(f"Category: {category}"),
-                html.H6("User Submissions (most recent first):"),
+                html.Div([
+                    html.Div([
+                        html.Strong("Weighted Value: "),
+                        html.Span(f"{weighted_value:.1f}")
+                    ], style={"display": "inline-block", "marginRight": 24, "fontSize": 18, "color": prussian_blue}),
+                    html.Div([
+                        html.Strong("Weighted Quality: "),
+                        html.Span(f"{weighted_quality:.1f}")
+                    ], style={"display": "inline-block", "fontSize": 18, "color": prussian_blue}),
+                ], style={"marginBottom": 12, "marginTop": 8}),
+                html.Div(
+                    dcc.Graph(figure=mini_fig, config={"displayModeBar": False}, style={"margin": "0 auto", "maxWidth": 340, "marginBottom": 32, "marginTop": 8}),
+                    style={"display": "flex", "justifyContent": "center", "alignItems": "center", "width": "100%"}
+                ),
+                html.H6("User Submissions (most recent first):", style={"marginTop": 24, "marginBottom": 12}),
                 dbc.Table([
-                    html.Thead(html.Tr([html.Th("User"), html.Th("Value"), html.Th("Quality"), html.Th("Date")])) ,
+                    html.Thead(html.Tr([
+                        html.Th("User"), html.Th("Value"), html.Th("Quality"), html.Th("Date"), html.Th("Final Weight"), html.Th("Upvote")  # Upvote last
+                    ])),
                     html.Tbody(user_rows)
-                ], bordered=True, hover=True, size="sm"),
-            ])
+                ], bordered=True, hover=True, size="sm", style={"marginBottom": 0, "marginTop": 0}),
+            ], style={"padding": "0 8px 8px 8px", "width": "100%"})
         return True, name, body, {"name": name, "category": category}
     return is_open, dash.no_update, dash.no_update, selected_data
+
+@app.callback(
+    Output("profile-body", "children", allow_duplicate=True),
+    Input({"type": "upvote-btn", "index": ALL}, "n_clicks"),
+    State("selected-restaurant", "data"),
+    State("profile-body", "children"),
+    prevent_initial_call=True
+)
+def fast_upvote_refresh(n_clicks_list, selected_data, profile_body):
+    ctx = callback_context
+    if not ctx.triggered or not selected_data:
+        return dash.no_update
+    triggered = ctx.triggered[0]["prop_id"].split(".")[0]
+    import json
+    try:
+        btn_id = json.loads(triggered)
+        submission_id = btn_id["index"]
+    except Exception:
+        return dash.no_update
+    user_id = get_current_user_id()
+    if not user_id:
+        return dash.no_update
+    with SessionLocal() as db:
+        sub = db.query(Submission).filter(Submission.id == submission_id).first()
+        if not sub:
+            return dash.no_update
+        toggle_upvote(submission_id, user_id, sub.category, sub.type)
+        # Re-query upvote count and user status for all submissions in this restaurant
+        subs = db.query(Submission).filter(Submission.name == selected_data.get("name"), Submission.category == selected_data.get("category")).all()
+    # Rebuild modal body only
+    subs = sorted(subs, key=lambda s: s.date_submitted or datetime.min, reverse=True)
+    user_rows = []
+    all_values = [s.value for s in subs]
+    m = sum(all_values) / len(all_values) if all_values else 50
+    now = datetime.utcnow()
+    norm_weights, upvotes_list = get_restaurant_weights(subs)
+    total_weight = sum(norm_weights)
+    if total_weight == 0:
+        weighted_value = sum(s.value for s in subs) / len(subs)
+        weighted_quality = sum(s.quality for s in subs) / len(subs)
+    else:
+        weighted_value = sum(s.value * w for s, w in zip(subs, norm_weights)) / sum(norm_weights)
+        weighted_quality = sum(s.quality * w for s, w in zip(subs, norm_weights)) / sum(norm_weights)
+    min_w, max_w = min(norm_weights), max(norm_weights)
+    def norm_opacity(w):
+        if max_w == min_w:
+            return 1.0
+        return 0.2 + 0.8 * (w - min_w) / (max_w - min_w)
+    mini_fig = go.Figure()
+    for i in range(3):
+        for j in range(3):
+            mini_fig.add_shape(type="rect",
+                x0=i*100/3, x1=(i+1)*100/3,
+                y0=j*100/3, y1=(j+1)*100/3,
+                fillcolor=region_colors[j][i],
+                opacity=0.3,
+                line={"width": 1, "color": "#222"},
+                layer="below"
+            )
+    for k in range(1, 3):
+        mini_fig.add_shape(type="line", x0=k*100/3, x1=k*100/3, y0=0, y1=100, line={"color": "#222", "width": 2})
+        mini_fig.add_shape(type="line", y0=k*100/3, y1=k*100/3, x0=0, x1=100, line={"color": "#222", "width": 2})
+    mini_fig.add_trace(go.Scatter(
+        x=[s.value for s in subs],
+        y=[s.quality for s in subs],
+        mode="markers",
+        marker={
+            "size": 18,
+            "color": prussian_blue,
+            "opacity": [norm_opacity(w) for w in norm_weights],
+            "line": {"width": 2, "color": "#fff"}
+        },
+        text=[f"{get_user_initials(s.user_id)}<br>Value: {s.value:.0f}<br>Quality: {s.quality:.0f}<br>Final Weight: {w:.2f}%" for s, w in zip(subs, norm_weights)],
+        hoverinfo="text",
+    ))
+    mini_fig.update_layout(
+        width=320, height=320,
+        margin={"l": 60, "r": 10, "t": 40, "b": 60},
+        xaxis={
+            "range": [0, 100],
+            "showticklabels": False,
+            "showgrid": False,
+            "zeroline": False,
+            "title": "Value (%)",
+            "title_standoff": 10,
+        },
+        yaxis={
+            "range": [100, 0],
+            "showticklabels": False,
+            "showgrid": False,
+            "zeroline": False,
+            "title": "Quality (%)",
+            "title_standoff": 10,
+        },
+        plot_bgcolor="#fff",
+        paper_bgcolor="#fff",
+        title={"text": "Mini Chart (This Restaurant)", "x": 0, "xanchor": "left", "font": {"size": 20, "color": prussian_blue}},
+        annotations=[]
+    )
+    for i, s in enumerate(subs):
+        upvotes = upvotes_list[i]
+        final_weight = norm_weights[i]
+        user_has_upvoted = has_user_upvoted(s.id, user_id) if user_id else False
+        upvote_btn = dbc.Button(
+            [
+                html.Span("▲", style={"color": prussian_blue if user_has_upvoted else "#aaa", "fontWeight": "bold", "fontSize": 18}),
+                html.Span(f" {upvotes}", style={"marginLeft": 4, "color": prussian_blue if user_has_upvoted else "#aaa"})
+            ],
+            id={"type": "upvote-btn", "index": s.id},
+            color="link",
+            style={"padding": "0 8px", "minWidth": 0},
+            n_clicks=0,
+            disabled=False
+        )
+        user_rows.append(html.Tr([
+            html.Td(get_user_initials(s.user_id)),
+            html.Td(f"{s.value:.0f}"),
+            html.Td(f"{s.quality:.0f}"),
+            html.Td(s.date_submitted.strftime("%Y-%m-%d") if s.date_submitted else "-"),
+            html.Td(f"{final_weight:.1f}%", style={"color": prussian_blue, "fontWeight": 600}),
+            html.Td(upvote_btn),
+        ]))
+    body = html.Div([
+        html.H5(f"Category: {selected_data.get('category', '')}"),
+        html.Div([
+            html.Div([
+                html.Strong("Weighted Value: "),
+                html.Span(f"{weighted_value:.1f}")
+            ], style={"display": "inline-block", "marginRight": 24, "fontSize": 18, "color": prussian_blue}),
+            html.Div([
+                html.Strong("Weighted Quality: "),
+                html.Span(f"{weighted_quality:.1f}")
+            ], style={"display": "inline-block", "fontSize": 18, "color": prussian_blue}),
+        ], style={"marginBottom": 12, "marginTop": 8}),
+        html.Div(
+            dcc.Graph(figure=mini_fig, config={"displayModeBar": False}, style={"margin": "0 auto", "maxWidth": 340, "marginBottom": 32, "marginTop": 8}),
+            style={"display": "flex", "justifyContent": "center", "alignItems": "center", "width": "100%"}
+        ),
+        html.H6("User Submissions (most recent first):", style={"marginTop": 24, "marginBottom": 12}),
+        dbc.Table([
+            html.Thead(html.Tr([
+                html.Th("User"), html.Th("Value"), html.Th("Quality"), html.Th("Date"), html.Th("Final Weight"), html.Th("Upvote")
+            ])),
+            html.Tbody(user_rows)
+        ], bordered=True, hover=True, size="sm", style={"marginBottom": 0, "marginTop": 0}),
+    ], style={"padding": "0 8px 8px 8px", "width": "100%"})
+    return body
+
+# --- Ensure login/logout section always renders correctly ---
+@app.callback(
+    Output("login-section", "children"),
+    Input("url", "pathname")
+)
+def update_login_section(_):
+    return get_login_section()
+
+def toggle_upvote(submission_id, voter_id, category, type_):
+    with SessionLocal() as db:
+        vote = db.query(SubmissionUpvote).filter_by(submission_id=submission_id, voter_id=voter_id).first()
+        if vote:
+            db.delete(vote)  # Remove upvote if already exists (toggle off)
+        else:
+            db.add(SubmissionUpvote(submission_id=submission_id, voter_id=voter_id, category=category, type=type_))
+        db.commit()  # Always commit to ensure DB is updated
+
+def get_upvote_count(submission_id):
+    with SessionLocal() as db:
+        return db.query(SubmissionUpvote).filter_by(submission_id=submission_id).count()
+
+def has_user_upvoted(submission_id, voter_id):
+    with SessionLocal() as db:
+        return db.query(SubmissionUpvote).filter_by(submission_id=submission_id, voter_id=voter_id).first() is not None
+
+@app.server.route("/logout")
+def logout():
+    from flask import session as flask_session
+    flask_session.clear()
+    return flask_redirect("/")
