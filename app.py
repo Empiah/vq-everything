@@ -455,7 +455,7 @@ app.layout = dbc.Container([
                 dcc.Dropdown(
                     id="category-filter",
                     options=[{"label": c, "value": c} for c in [
-                        "All", "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Japanese", "Other"
+                        "All", "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Japanese", "Wine Bar", "British", "Pub", "Other"
                     ]],
                     value="All",
                     clearable=False,
@@ -479,7 +479,7 @@ app.layout = dbc.Container([
                         dcc.Dropdown(id="type", options=[{"label": "Restaurant", "value": "Restaurant"}], value="Restaurant", searchable=True),
                         dbc.Label("Category"),
                         dcc.Dropdown(id="category", options=[{"label": c, "value": c} for c in [
-                            "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Japanese", "Other"
+                            "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Japanese", "Wine Bar", "British", "Pub", "Other"
                         ]], value="Steak", searchable=True),
                         dbc.Label("Name"),
                         dbc.Input(id="name", type="text", maxLength=100, required=True),
