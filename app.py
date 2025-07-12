@@ -248,13 +248,16 @@ def get_current_user():
         from flask import session as flask_session
         user_info = flask_session.get("user_info")
         if user_info:
+            print("[UserCache] Returning cached Google user info from session.")
             return user_info
         if "google_oauth_token" not in flask_session:
             return None
+        print("[UserCache] Fetching Google user info from API...")
         resp = google.get("/oauth2/v2/userinfo")
         if resp.ok:
             user_info = resp.json()
             flask_session["user_info"] = user_info
+            print("[UserCache] Google user info cached in session.")
             return user_info
     except Exception:
         return None
@@ -462,6 +465,37 @@ app.layout = dbc.Container([
     ),
     html.Div(id="user-table-container", style={"marginTop": 40, "paddingLeft": 20, "paddingRight": 20, "paddingBottom": 30}),
 ], fluid=True)
+
+# --- Upvote in-memory cache (thread-safe, periodic DB flush) ---
+import threading
+import time
+
+# Global upvote cache and lock
+upvote_cache = {}
+upvote_user_cache = {}
+pending_upvote_changes = []  # List of (submission_id, voter_id, category, type_, action)
+upvote_lock = threading.Lock()
+CACHE_FLUSH_INTERVAL = 30  # seconds
+
+def get_upvote_count(submission_id):
+    with upvote_lock:
+        return upvote_cache.get(submission_id, 0)
+
+def has_user_upvoted(submission_id, voter_id):
+    with upvote_lock:
+        return voter_id in upvote_user_cache.get(submission_id, set())
+
+def toggle_upvote(submission_id, voter_id, category, type_):
+    with upvote_lock:
+        user_set = upvote_user_cache.setdefault(submission_id, set())
+        if voter_id in user_set:
+            user_set.remove(voter_id)
+            upvote_cache[submission_id] = upvote_cache.get(submission_id, 1) - 1
+            pending_upvote_changes.append((submission_id, voter_id, category, type_, "remove"))
+        else:
+            user_set.add(voter_id)
+            upvote_cache[submission_id] = upvote_cache.get(submission_id, 0) + 1
+            pending_upvote_changes.append((submission_id, voter_id, category, type_, "add"))
 
 # --- New weighting methodology for restaurant submissions ---
 def get_restaurant_weights(subs, vote_factor=1.0, date_factor=0.3):
@@ -711,13 +745,11 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
             else:
                 weighted_value = sum(s.value * w for s, w in zip(subs, norm_weights)) / sum(norm_weights)
                 weighted_quality = sum(s.quality * w for s, w in zip(subs, norm_weights)) / sum(norm_weights)
-            # Normalize for opacity (0.2 to 1.0)
             min_w, max_w = min(norm_weights), max(norm_weights)
             def norm_opacity(w):
                 if max_w == min_w:
                     return 1.0
                 return 0.2 + 0.8 * (w - min_w) / (max_w - min_w)
-            # Mini chart for this restaurant (same style as main chart)
             mini_fig = go.Figure()
             for i in range(3):
                 for j in range(3):
@@ -965,36 +997,3 @@ def fast_upvote_refresh(n_clicks_list, selected_data, profile_body):
         ], bordered=True, hover=True, size="sm", style={"marginBottom": 0, "marginTop": 0}),
     ], style={"padding": "0 8px 8px 8px", "width": "100%"})
     return body
-
-# --- Ensure login/logout section always renders correctly ---
-@app.callback(
-    Output("login-section", "children"),
-    Input("url", "pathname")
-)
-def update_login_section(_):
-    return get_login_section()
-
-# --- Upvote count cache (thread-safe, 10s TTL) ---
-def get_upvote_count(submission_id):
-    with SessionLocal() as db:
-        return db.query(SubmissionUpvote).filter_by(submission_id=submission_id).count()
-
-def toggle_upvote(submission_id, voter_id, category, type_):
-    with SessionLocal() as db:
-        vote = db.query(SubmissionUpvote).filter_by(submission_id=submission_id, voter_id=voter_id).first()
-        if vote:
-            db.delete(vote)
-        else:
-            db.add(SubmissionUpvote(submission_id=submission_id, voter_id=voter_id, category=category, type=type_))
-        db.commit()
-
-def has_user_upvoted(submission_id, voter_id):
-    with SessionLocal() as db:
-        return db.query(SubmissionUpvote).filter_by(submission_id=submission_id, voter_id=voter_id).first() is not None
-
-@app.server.route("/logout")
-def logout():
-    from flask import session as flask_session
-    flask_session.pop("user_info", None)  # Explicitly remove cached user info
-    flask_session.clear()
-    return flask_redirect("/")
