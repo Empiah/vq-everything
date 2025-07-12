@@ -85,11 +85,11 @@ def get_submissions():
 
 # --- Helper: get submissions for a user ---
 def get_user_submissions(user_id):
-    # Accept both name and email for backward compatibility
+    # Only return submissions where user_id matches exactly (do not fallback to get_current_user_email)
+    if not user_id:
+        return []
     with SessionLocal() as db:
-        return db.query(Submission).filter(
-            (Submission.user_id == user_id) | (Submission.user_id == get_current_user_email())
-        ).all()
+        return db.query(Submission).filter(Submission.user_id == user_id).all()
 
 def get_current_user_email():
     user = get_current_user()
