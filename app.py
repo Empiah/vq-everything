@@ -566,6 +566,25 @@ def toggle_upvote(submission_id, voter_id, category, type_):
             upvote_cache[submission_id] = upvote_cache.get(submission_id, 0) + 1
             pending_upvote_changes.append((submission_id, voter_id, category, type_, "add"))
             print(f"[CACHEDEBUG] upvote ADDED: {upvote_cache}", flush=True)
+    flush_upvote_changes()
+
+def flush_upvote_changes():
+    """Write all pending upvote changes to the database immediately."""
+    global pending_upvote_changes
+    with upvote_lock:
+        if not pending_upvote_changes:
+            return
+        with SessionLocal() as db:
+            for submission_id, voter_id, category, type_, action in pending_upvote_changes:
+                if action == "add":
+                    # Insert if not exists
+                    exists = db.query(SubmissionUpvote).filter_by(submission_id=submission_id, voter_id=voter_id).first()
+                    if not exists:
+                        db.add(SubmissionUpvote(submission_id=submission_id, voter_id=voter_id, category=category, type=type_))
+                elif action == "remove":
+                    db.query(SubmissionUpvote).filter_by(submission_id=submission_id, voter_id=voter_id).delete(synchronize_session=False)
+            db.commit()
+        pending_upvote_changes.clear()
 
 # --- New weighting methodology for restaurant submissions ---
 def get_restaurant_weights(subs, vote_factor=1.0, date_factor=0.3):
@@ -648,6 +667,8 @@ def get_main_chart_subs(filter_category=None):
     Input("show-mine-toggle", "data"),
     Input("user-table", "active_cell"),
     Input("submit-btn", "n_clicks"),
+    Input("form-alert", "children"),  # NEW: triggers on submission
+    Input("profile-modal", "is_open"), # NEW: triggers on modal open/close
     State("user-table", "data"),
     State("login-state", "data"),
     State("value", "value"),
@@ -660,7 +681,10 @@ def get_main_chart_subs(filter_category=None):
     State("show-mine-toggle", "data"),
     # No prevent_initial_call so it runs on page load
 )
-def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_clicks, data, login_state, value, quality, type_, category, name, location, filter_category2, show_mine2):
+def combined_scatter_and_remove(
+    filter_category, show_mine, active_cell, n_clicks, form_alert, modal_is_open,
+    data, login_state, value, quality, type_, category, name, location, filter_category2, show_mine2
+):
     ctx = callback_context
     user_id = None
     user_email = None
