@@ -176,7 +176,7 @@ def get_user_table(user_id=None, show_mine=True, filter_category="All"):
          "category": s.category,
          "name": s.name,
          "location": s.location,
-         "user_id": get_user_initials(s.user_id),
+         "user_id": s.user_id if s.user_id else "?",  # Show full user_id
          "date_submitted": format_date(getattr(s, "date_submitted", None)),
          "remove": "Delete"}
         for s in subs
@@ -594,20 +594,12 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
     ctx = callback_context
     user_id = None
     user_email = None
-    if show_mine:
-        try:
-            user_id = get_current_user_id()
-            user_email = get_current_user_email()
-        except Exception:
-            user_id = None
-            user_email = None
-    else:
-        try:
-            user_id = get_current_user_id()
-            user_email = get_current_user_email()
-        except Exception:
-            user_id = None
-            user_email = None
+    try:
+        user_id = get_current_user_id()
+        user_email = get_current_user_email()
+    except Exception:
+        user_id = None
+        user_email = None
     norm_user_id = (user_id or "").strip().lower()
     norm_user_email = (user_email or "").strip().lower()
     admin_env = os.getenv("ADMIN_EMAIL", "admin@example.com").strip().lower()
@@ -683,19 +675,17 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
     # Table logic
     table = None
     if show_mine:
-        # Show user's own submissions
-        if user_id or user_email:
-            subs = get_user_submissions(user_id)
-            if filter_category and filter_category != "All":
-                subs = [s for s in subs if s.category == filter_category]
+        # Show user's own submissions only
+        if user_id:
             table = get_user_table(user_id, show_mine=True, filter_category=filter_category)
+        else:
+            table = html.Div()
     else:
         # Show all submissions only for admin
         if is_admin:
-            subs = get_submissions()
-            if filter_category and filter_category != "All":
-                subs = [s for s in subs if s.category == filter_category]
             table = get_user_table(user_id, show_mine=False, filter_category=filter_category)
+        else:
+            table = html.Div()
     if table is None:
         table = html.Div()
     return fig, table
