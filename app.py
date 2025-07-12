@@ -23,6 +23,8 @@ from dash.dependencies import ALL
 # Load environment variables from .env
 load_dotenv()
 
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
+
 # --- Database setup (SQLite, persistent for Render) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./submissions.db")
 engine = sa.create_engine(
@@ -59,6 +61,22 @@ try:
     Base.metadata.create_all(bind=engine)
 except Exception as e:
     print(f"[WARNING] Could not create tables: {e}")
+
+# --- SQLite performance optimizations (PRAGMA) ---
+try:
+    with engine.connect() as conn:
+        conn.execute(sa.text("PRAGMA journal_mode=WAL;"))
+        conn.execute(sa.text("PRAGMA synchronous=NORMAL;"))
+except Exception as e:
+    print(f"[WARNING] Could not set PRAGMA options: {e}")
+
+# --- Add indexes for upvote performance ---
+try:
+    with engine.connect() as conn:
+        conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_upvotes_submission_id ON submission_upvotes (submission_id);"))
+        conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_upvotes_voter_id ON submission_upvotes (voter_id);"))
+except Exception as e:
+    print(f"[WARNING] Could not create indexes: {e}")
 
 # --- Helper: get all submissions ---
 def get_submissions():
@@ -218,19 +236,27 @@ app.server.secret_key = os.getenv("FLASK_SECRET_KEY")
 # Helper to get current user info
 from flask import session as flask_session
 
+@app.server.before_request
+def clear_user_info_on_new_login():
+    from flask import session as flask_session
+    if "google_oauth_token" in flask_session and "user_info" in flask_session:
+        flask_session.pop("user_info", None)
+
+
 def get_current_user():
     try:
-        print("[DEBUG] flask_session keys:", list(flask_session.keys()))
+        from flask import session as flask_session
+        user_info = flask_session.get("user_info")
+        if user_info:
+            return user_info
         if "google_oauth_token" not in flask_session:
-            print("[DEBUG] No google_oauth_token in session")
             return None
         resp = google.get("/oauth2/v2/userinfo")
-        print("[DEBUG] google.get response:", resp)
         if resp.ok:
-            print("[DEBUG] User info:", resp.json())
-            return resp.json()
-    except Exception as e:
-        print("[DEBUG] Exception in get_current_user:", e)
+            user_info = resp.json()
+            flask_session["user_info"] = user_info
+            return user_info
+    except Exception:
         return None
     return None
 
@@ -513,7 +539,7 @@ def get_main_chart_subs(filter_category=None):
 # --- Update main chart callback ---
 @app.callback(
     Output("scatter-plot", "figure"),
-    Output("user-table", "data"),
+    Output("user-table-container", "children"),
     Input("category-filter", "value"),
     Input("show-mine-toggle", "data"),
     Input("user-table", "active_cell"),
@@ -532,46 +558,39 @@ def get_main_chart_subs(filter_category=None):
 )
 def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_clicks, data, login_state, value, quality, type_, category, name, location, filter_category2, show_mine2):
     ctx = callback_context
-    # Only get user_id if show_mine is True
     user_id = None
+    user_email = None
     if show_mine:
         try:
             user_id = get_current_user_id()
+            user_email = get_current_user_email()
         except Exception:
             user_id = None
-    # Determine if this is a remove action
+            user_email = None
+    else:
+        try:
+            user_id = get_current_user_id()
+            user_email = get_current_user_email()
+        except Exception:
+            user_id = None
+            user_email = None
+    norm_user_id = (user_id or "").strip().lower()
+    norm_user_email = (user_email or "").strip().lower()
+    admin_env = os.getenv("ADMIN_EMAIL", "admin@example.com").strip().lower()
+    is_admin = (norm_user_email == admin_env) or (norm_user_id == admin_env)
+    # Remove action
     if ctx.triggered and ctx.triggered[0]["prop_id"].startswith("user-table.active_cell") and active_cell and active_cell.get("column_id") == "remove":
         row = data[active_cell["row"]]
         if not user_id or not login_state or not login_state.get("logged_in"):
-            return dash.no_update, data
+            return dash.no_update, dash.no_update
         delete_submission(row["id"], user_id)
-        # After deletion, refresh data
-        if show_mine and user_id:
-            subs = get_user_submissions(user_id)
-        else:
-            subs = get_submissions()
-        if filter_category and filter_category != "All":
-            subs = [s for s in subs if s.category == filter_category]
-        avg_subs = get_averaged_subs(subs)
-        new_data = [d for d in data if d["id"] != row["id"]]
+    # Get submissions for chart
+    if filter_category and filter_category != "All":
+        subs = [s for s in get_submissions() if s.category == filter_category]
     else:
-        # Not a remove action, or after submit, just update chart and table
-        if show_mine and user_id:
-            subs = get_user_submissions(user_id)
-        else:
-            subs = get_submissions()
-        if filter_category and filter_category != "All":
-            subs = [s for s in subs if s.category == filter_category]
-        avg_subs = get_averaged_subs(subs)
-        # Always recalculate table data, use initials for user_id
-        new_data = [
-            {"id": s.id, "value": s.value, "quality": s.quality, "type": s.type, "category": s.category, "name": s.name, "location": s.location, "user_id": get_user_initials(s.user_id), "remove": "Delete"}
-            for s in subs
-        ]
-    # Use weighted subs for chart
+        subs = get_submissions()
     chart_subs, chart_counts = get_main_chart_subs(filter_category)
     fig = go.Figure()
-    # Draw grid regions (flip axes: Value on x, Quality on y)
     for i in range(3):
         for j in range(3):
             fig.add_shape(type="rect",
@@ -582,7 +601,6 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
                 line={"width": 1, "color": "#222"},
                 layer="below"
             )
-    # Draw bold grid lines (vertical for Value, horizontal for Quality)
     for k in range(1, 3):
         fig.add_shape(type="line", x0=k*100/3, x1=k*100/3, y0=0, y1=100, line={"color": "#222", "width": 2})
         fig.add_shape(type="line", y0=k*100/3, y1=k*100/3, x0=0, x1=100, line={"color": "#222", "width": 2})
@@ -628,7 +646,25 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
             dict(x=-0.13, y=5/6, text="Low Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
         ]
     )
-    return fig, new_data
+    # Table logic
+    table = None
+    if show_mine:
+        # Show user's own submissions
+        if user_id or user_email:
+            subs = get_user_submissions(user_id)
+            if filter_category and filter_category != "All":
+                subs = [s for s in subs if s.category == filter_category]
+            table = get_user_table(user_id, show_mine=True, filter_category=filter_category)
+    else:
+        # Show all submissions only for admin
+        if is_admin:
+            subs = get_submissions()
+            if filter_category and filter_category != "All":
+                subs = [s for s in subs if s.category == filter_category]
+            table = get_user_table(user_id, show_mine=False, filter_category=filter_category)
+    if table is None:
+        table = html.Div()
+    return fig, table
 
 # --- Modal and upvote logic: weighted value/quality display above table, upvote system, no callback errors ---
 @app.callback(
@@ -938,18 +974,19 @@ def fast_upvote_refresh(n_clicks_list, selected_data, profile_body):
 def update_login_section(_):
     return get_login_section()
 
+# --- Upvote count cache (thread-safe, 10s TTL) ---
+def get_upvote_count(submission_id):
+    with SessionLocal() as db:
+        return db.query(SubmissionUpvote).filter_by(submission_id=submission_id).count()
+
 def toggle_upvote(submission_id, voter_id, category, type_):
     with SessionLocal() as db:
         vote = db.query(SubmissionUpvote).filter_by(submission_id=submission_id, voter_id=voter_id).first()
         if vote:
-            db.delete(vote)  # Remove upvote if already exists (toggle off)
+            db.delete(vote)
         else:
             db.add(SubmissionUpvote(submission_id=submission_id, voter_id=voter_id, category=category, type=type_))
-        db.commit()  # Always commit to ensure DB is updated
-
-def get_upvote_count(submission_id):
-    with SessionLocal() as db:
-        return db.query(SubmissionUpvote).filter_by(submission_id=submission_id).count()
+        db.commit()
 
 def has_user_upvoted(submission_id, voter_id):
     with SessionLocal() as db:
@@ -958,5 +995,6 @@ def has_user_upvoted(submission_id, voter_id):
 @app.server.route("/logout")
 def logout():
     from flask import session as flask_session
+    flask_session.pop("user_info", None)  # Explicitly remove cached user info
     flask_session.clear()
     return flask_redirect("/")
