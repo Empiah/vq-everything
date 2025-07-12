@@ -13,12 +13,14 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objs as go
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker, declarative_base
-from flask import session, redirect as flask_redirect, url_for
+from flask import session, redirect as flask_redirect, url_for, session as flask_session
 from flask_dance.contrib.google import make_google_blueprint, google
 from dotenv import load_dotenv
 from dash import dash_table  # Updated import for dash_table
 from datetime import datetime
 from dash.dependencies import ALL
+
+print(f"[ABSDEBUG] Loading app.py from {__file__}", flush=True)
 
 # Load environment variables from .env
 load_dotenv()
@@ -27,11 +29,19 @@ ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
 
 # --- Database setup (SQLite, persistent for Render) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./submissions.db")
-engine = sa.create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    isolation_level="AUTOCOMMIT" if DATABASE_URL.startswith("sqlite") else None
-)
+if DATABASE_URL.startswith("sqlite"):
+    engine = sa.create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False, "timeout": 30},
+        # Use default isolation_level (None) for transactional mode
+    )
+    print("[DB] SQLite engine created with timeout=30, check_same_thread=False, default isolation_level (transactional)", flush=True)
+else:
+    engine = sa.create_engine(
+        DATABASE_URL,
+        isolation_level=None  # Use default for non-SQLite
+    )
+    print(f"[DB] Engine created for {DATABASE_URL}", flush=True)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -124,16 +134,47 @@ def delete_all_submissions():
 # delete_all_submissions()  # Clear all submissions on app start (uncomment to use)
 
 # --- Helper: delete a submission by id and user_id ---
-def delete_submission(sub_id, user_id):
-    # Allow admin to delete any record
-    if user_id == ADMIN_EMAIL:
-        with SessionLocal() as db:
-            db.query(Submission).filter(Submission.id == sub_id).delete()
-            db.commit()
-    else:
-        with SessionLocal() as db:
-            db.query(Submission).filter(Submission.id == sub_id, Submission.user_id == user_id).delete()
-            db.commit()
+def delete_submission_real(sub_id, user_id, user_email=None):
+    import sys
+    import traceback
+    import os
+    print(f"[DEBUG] delete_submission_real PID: {os.getpid()}", flush=True)
+    admin_env = os.getenv("ADMIN_EMAIL", "admin@example.com").strip().lower()
+    norm_user_id = (user_id or "").strip().lower()
+    norm_user_email = (user_email or "").strip().lower()
+    print(f"[DEBUG] admin_env={admin_env}, norm_user_id={norm_user_id}, norm_user_email={norm_user_email}", flush=True)
+    try:
+        print(f"[DEBUG] About to create SessionLocal() for sub_id={sub_id}", flush=True)
+        db = SessionLocal()
+        print(f"[DEBUG] Created SessionLocal() for sub_id={sub_id}", flush=True)
+        with db:
+            print(f"[DEBUG] Opened DB session in delete_submission_real for sub_id={sub_id}", flush=True)
+            if norm_user_id == admin_env or norm_user_email == admin_env:
+                print(f"[DEBUG] ADMIN DELETE PATH for sub_id={sub_id}", flush=True)
+                match_count = db.query(Submission).filter(Submission.id == sub_id).count()
+                print(f"[DEBUG] ADMIN: submissions matching sub_id={sub_id}: {match_count}", flush=True)
+                upvotes_deleted = db.query(SubmissionUpvote).filter(SubmissionUpvote.submission_id == sub_id).delete(synchronize_session=False)
+                subs_deleted = db.query(Submission).filter(Submission.id == sub_id).delete(synchronize_session=False)
+                db.commit()
+                print(f"[DEBUG] ADMIN DELETE: upvotes_deleted={upvotes_deleted}, subs_deleted={subs_deleted}", flush=True)
+                print(f"[DEBUG] ADMIN DELETE: committed for sub_id={sub_id}", flush=True)
+            else:
+                sub = db.query(Submission).filter(
+                    Submission.id == sub_id,
+                    sa.or_(sa.func.lower(Submission.user_id) == norm_user_id, sa.func.lower(Submission.user_id) == norm_user_email)
+                ).first()
+                if sub:
+                    print(f"[DEBUG] USER DELETE PATH for sub_id={sub_id}", flush=True)
+                    upvotes_deleted = db.query(SubmissionUpvote).filter(SubmissionUpvote.submission_id == sub_id).delete(synchronize_session=False)
+                    db.delete(sub)
+                    db.commit()
+                    print(f"[DEBUG] USER DELETE: upvotes_deleted={upvotes_deleted}, sub_id={sub_id}", flush=True)
+                    print(f"[DEBUG] USER DELETE: committed for sub_id={sub_id}", flush=True)
+        print(f"[DEBUG] delete_submission_real exit for sub_id={sub_id}", flush=True)
+    except Exception as e:
+        print(f"[ERROR] Exception in delete_submission_real for sub_id={sub_id}: {e}", flush=True)
+        traceback.print_exc()
+        sys.stdout.flush()
 
 # --- Helper: average duplicate submissions ---
 def get_averaged_subs(subs):
@@ -609,12 +650,23 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
     norm_user_email = (user_email or "").strip().lower()
     admin_env = os.getenv("ADMIN_EMAIL", "admin@example.com").strip().lower()
     is_admin = (norm_user_email == admin_env) or (norm_user_id == admin_env)
+    deleted = False
     # Remove action
     if ctx.triggered and ctx.triggered[0]["prop_id"].startswith("user-table.active_cell") and active_cell and active_cell.get("column_id") == "remove":
         row = data[active_cell["row"]]
-        if not user_id or not login_state or not login_state.get("logged_in"):
-            return dash.no_update, dash.no_update
-        delete_submission(row["id"], user_id)
+        print(f"[DEBUG] Attempting delete: row_id={row['id']} user_id={user_id} user_email={user_email} is_admin={is_admin}")
+        print(f"[ABSDEBUG] About to call delete_submission for row_id={row['id']}", flush=True)
+        print(f"[ABSDEBUG] delete_submission_real ref: {delete_submission_real}", flush=True)
+        print(f"[ABSDEBUG] CALLBACK PID: {os.getpid()}", flush=True)
+        try:
+            print(f"[ABSDEBUG] About to actually CALL delete_submission_real for row_id={row['id']}", flush=True)
+            delete_submission_real(row["id"], user_id, user_email)
+            print(f"[ABSDEBUG] Finished call to delete_submission_real for row_id={row['id']}", flush=True)
+        except Exception as e:
+            import traceback
+            print(f"[ABSDEBUG] Exception when calling delete_submission_real: {e}", flush=True)
+            traceback.print_exc()
+        deleted = True
     # Get submissions for chart
     if filter_category and filter_category != "All":
         subs = [s for s in get_submissions() if s.category == filter_category]
@@ -693,6 +745,9 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
             table = html.Div()
     if table is None:
         table = html.Div()
+    # If a delete just happened, force update by returning new objects
+    if deleted:
+        return fig, table
     return fig, table
 
 # --- Modal and upvote logic: weighted value/quality display above table, upvote system, no callback errors ---
@@ -993,6 +1048,32 @@ def fast_upvote_refresh(n_clicks_list, selected_data, profile_body):
     ], style={"padding": "0 8px 8px 8px", "width": "100%"})
     return body
 
+# --- DB startup test ---
+def db_startup_test():
+    import os
+    import sys
+    import traceback
+    print(f"[DBTEST] Process PID: {os.getpid()}", flush=True)
+    try:
+        # Try to open DB file for writing
+        db_path = DATABASE_URL.replace('sqlite:///', '')
+        with open(db_path, 'a') as f:
+            f.write('')
+        print(f"[DBTEST] DB file {db_path} is writable.", flush=True)
+    except Exception as e:
+        print(f"[DBTEST] Cannot write to DB file: {e}", flush=True)
+    try:
+        with SessionLocal() as db:
+            print("[DBTEST] Opened DB session.", flush=True)
+            # Try a simple query
+            count = db.query(Submission).count()
+            print(f"[DBTEST] Submission count: {count}", flush=True)
+    except Exception as e:
+        print(f"[DBTEST] Exception opening DB session: {e}", flush=True)
+        traceback.print_exc()
+        sys.stdout.flush()
+db_startup_test()
+
 # --- Add callback to update login/logout section ---
 @app.callback(
     Output("login-section", "children"),
@@ -1010,3 +1091,74 @@ def update_login_section(_, __):
 )
 def update_show_mine_toggle(radio_value):
     return radio_value
+
+# --- Enable/disable submit button based on form validity and login ---
+@app.callback(
+    Output("submit-btn", "disabled"),
+    [Input("value", "value"),
+     Input("quality", "value"),
+     Input("type", "value"),
+     Input("category", "value"),
+     Input("name", "value"),
+     Input("location", "value"),
+     Input("login-section", "children")],
+    prevent_initial_call=False
+)
+def enable_submit(value, quality, type_, category, name, location, login_children):
+    # Check if user is logged in
+    logged_in = False
+    if login_children:
+        # Check for 'Log out' in the children (string or html)
+        if isinstance(login_children, list):
+            for child in login_children:
+                if hasattr(child, 'props') and 'Log out' in str(child):
+                    logged_in = True
+        elif hasattr(login_children, 'props') and 'Log out' in str(login_children):
+            logged_in = True
+        elif 'Log out' in str(login_children):
+            logged_in = True
+    # All fields must be filled and user logged in
+    if value is not None and quality is not None and type_ and category and name and location and logged_in:
+        return False
+    return True
+
+# --- Handle submission ---
+@app.callback(
+    Output("form-alert", "children"),
+    Input("submit-btn", "n_clicks"),
+    [State("value", "value"),
+     State("quality", "value"),
+     State("type", "value"),
+     State("category", "value"),
+     State("name", "value"),
+     State("location", "value")],
+    prevent_initial_call=True
+)
+def handle_submit(n_clicks, value, quality, type_, category, name, location):
+    if not n_clicks:
+        return ""
+    # Validate again
+    if value is None or quality is None or not type_ or not category or not name or not location:
+        return dbc.Alert("Please fill in all fields.", color="danger")
+    # Check login
+    user = get_current_user()
+    if not user:
+        return dbc.Alert("You must be logged in to submit.", color="danger")
+    # Add submission
+    try:
+        add_submission({
+            "value": value,
+            "quality": quality,
+            "type": type_,
+            "category": category,
+            "name": name,
+            "location": location
+        })
+        return dbc.Alert("Submission successful!", color="success")
+    except Exception as e:
+        return dbc.Alert(f"Error: {e}", color="danger")
+
+@app.server.route("/logout")
+def logout():
+    flask_session.clear()
+    return flask_redirect("/")
