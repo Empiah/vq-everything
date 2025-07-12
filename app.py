@@ -52,8 +52,17 @@ def get_submissions():
 
 # --- Helper: get submissions for a user ---
 def get_user_submissions(user_id):
+    # Accept both name and email for backward compatibility
     with SessionLocal() as db:
-        return db.query(Submission).filter(Submission.user_id == user_id).all()
+        return db.query(Submission).filter(
+            (Submission.user_id == user_id) | (Submission.user_id == get_current_user_email())
+        ).all()
+
+def get_current_user_email():
+    user = get_current_user()
+    if user:
+        return user.get("email")
+    return None
 
 # --- Helper: add a submission ---
 def add_submission(data):
@@ -75,9 +84,15 @@ def delete_all_submissions():
 
 # --- Helper: delete a submission by id and user_id ---
 def delete_submission(sub_id, user_id):
-    with SessionLocal() as db:
-        db.query(Submission).filter(Submission.id == sub_id, Submission.user_id == user_id).delete()
-        db.commit()
+    # Allow admin to delete any record
+    if user_id == ADMIN_EMAIL:
+        with SessionLocal() as db:
+            db.query(Submission).filter(Submission.id == sub_id).delete()
+            db.commit()
+    else:
+        with SessionLocal() as db:
+            db.query(Submission).filter(Submission.id == sub_id, Submission.user_id == user_id).delete()
+            db.commit()
 
 # --- Helper: average duplicate submissions ---
 def get_averaged_subs(subs):
@@ -105,6 +120,18 @@ def get_user_table(user_id=None, show_mine=True, filter_category="All"):
         subs = get_submissions()
     if filter_category and filter_category != "All":
         subs = [s for s in subs if s.category == filter_category]
+    
+    from datetime import datetime
+    def format_date(date_val):
+        if not date_val:
+            return "-"
+        if isinstance(date_val, str):
+            try:
+                # Try parsing as ISO or YYYY-MM-DD
+                return datetime.fromisoformat(date_val).strftime("%Y-%m-%d")
+            except Exception:
+                return date_val[:10]  # fallback: just take first 10 chars
+        return date_val.strftime("%Y-%m-%d")
     data = [
         {"id": s.id,
          "value": s.value,
@@ -114,7 +141,7 @@ def get_user_table(user_id=None, show_mine=True, filter_category="All"):
          "name": s.name,
          "location": s.location,
          "user_id": get_user_initials(s.user_id),
-         "date_submitted": s.date_submitted.strftime("%Y-%m-%d") if getattr(s, "date_submitted", None) else "-",
+         "date_submitted": format_date(getattr(s, "date_submitted", None)),
          "remove": "Delete"}
         for s in subs
     ]
@@ -235,7 +262,7 @@ def get_initial_figure():
         fig.add_trace(go.Scatter(
             x=[s.value for s in subs],
             y=[s.quality for s in subs],
-            text=[f"{s.name}<br>{s.category}<br>Value: {s.value:.2f}<br>Quality: {s.quality:.2f}" for s in subs],
+            text=[f"{s.name}<br>{s.category}<br>Value: {s.value:.0f}<br>Quality: {s.quality:.0f}" for s in subs],
             hoverinfo="text",
             mode="markers",
             marker={"size": 14, "color": prussian_blue, "line": {"width": 2, "color": "#fff"}},
@@ -474,7 +501,7 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
         fig.add_trace(go.Scatter(
             x=[s.value for s in avg_subs],
             y=[s.quality for s in avg_subs],
-            text=[f"{s.name}<br>{s.category}<br>Value: {s.value:.2f}<br>Quality: {s.quality:.2f}" for s in avg_subs],
+            text=[f"{s.name}<br>{s.category}<br>Value: {s.value:.0f}<br>Quality: {s.quality:.0f}" for s in avg_subs],
             hoverinfo="text",
             mode="markers",
             marker={"size": 14, "color": prussian_blue, "line": {"width": 2, "color": "#fff"}},
