@@ -121,9 +121,11 @@ def add_submission(data):
         sub = Submission(**data)
         db.add(sub)
         db.commit()
-        # Automatically upvote own submission
-        db.add(SubmissionUpvote(submission_id=sub.id, voter_id=user_id, category=data["category"], type=data["type"]))
-        db.commit()
+        # Automatically upvote own submission (commented out)
+        # db.add(SubmissionUpvote(submission_id=sub.id, voter_id=user_id, category=data["category"], type=data["type"]))
+        # db.commit()
+    # Refresh upvote cache after adding a new submission
+    load_upvote_cache()
 
 # --- Helper: delete all submissions ---
 def delete_all_submissions():
@@ -516,12 +518,31 @@ app.layout = dbc.Container([
 import threading
 import time
 
+def load_upvote_cache():
+    """Load all upvotes from the database into the in-memory cache."""
+    global upvote_cache, upvote_user_cache
+    print(f"[CACHEDEBUG] load_upvote_cache called", flush=True)
+    with upvote_lock:
+        upvote_cache.clear()
+        upvote_user_cache.clear()
+        with SessionLocal() as db:
+            upvote_rows = db.query(SubmissionUpvote).all()
+            for upvote in upvote_rows:
+                upvote_cache[upvote.submission_id] = upvote_cache.get(upvote.submission_id, 0) + 1
+                user_set = upvote_user_cache.setdefault(upvote.submission_id, set())
+                user_set.add(upvote.voter_id)
+    print(f"[CACHEDEBUG] upvote_cache after load: {upvote_cache}", flush=True)
+    print(f"[CACHEDEBUG] upvote_user_cache after load: {upvote_user_cache}", flush=True)
+
 # Global upvote cache and lock
 upvote_cache = {}
 upvote_user_cache = {}
 pending_upvote_changes = []  # List of (submission_id, voter_id, category, type_, action)
 upvote_lock = threading.Lock()
 CACHE_FLUSH_INTERVAL = 30  # seconds
+
+# Load upvote cache on startup
+load_upvote_cache()
 
 def get_upvote_count(submission_id):
     with upvote_lock:
@@ -532,16 +553,19 @@ def has_user_upvoted(submission_id, voter_id):
         return voter_id in upvote_user_cache.get(submission_id, set())
 
 def toggle_upvote(submission_id, voter_id, category, type_):
+    print(f"[CACHEDEBUG] toggle_upvote called for submission_id={submission_id}, voter_id={voter_id}", flush=True)
     with upvote_lock:
         user_set = upvote_user_cache.setdefault(submission_id, set())
         if voter_id in user_set:
             user_set.remove(voter_id)
-            upvote_cache[submission_id] = upvote_cache.get(submission_id, 1) - 1
+            upvote_cache[submission_id] = upvote_cache.get(submission_id, 0) - 1
             pending_upvote_changes.append((submission_id, voter_id, category, type_, "remove"))
+            print(f"[CACHEDEBUG] upvote REMOVED: {upvote_cache}", flush=True)
         else:
             user_set.add(voter_id)
             upvote_cache[submission_id] = upvote_cache.get(submission_id, 0) + 1
             pending_upvote_changes.append((submission_id, voter_id, category, type_, "add"))
+            print(f"[CACHEDEBUG] upvote ADDED: {upvote_cache}", flush=True)
 
 # --- New weighting methodology for restaurant submissions ---
 def get_restaurant_weights(subs, vote_factor=1.0, date_factor=0.3):
@@ -765,6 +789,7 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
 def display_profile_modal(clickData, close_clicks, is_open, selected_data):
     ctx = callback_context
     triggered = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else None
+    print(f"[MODALDEBUG] Modal triggered by: {triggered}", flush=True)
     if triggered == "close-profile-modal" and is_open:
         return False, dash.no_update, dash.no_update, None
     if triggered == "scatter-plot" and clickData:
@@ -776,6 +801,7 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
         # Query DB for all submissions for this restaurant
         with SessionLocal() as db:
             subs = db.query(Submission).filter(Submission.name == name, Submission.category == category).all()
+        print(f"[MODALDEBUG] Submissions for {name}/{category}: {[s.id for s in subs]}", flush=True)
         if not subs:
             body = html.Div("No submissions found.")
         else:
@@ -785,8 +811,9 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
             all_values = [s.value for s in subs]
             m = sum(all_values) / len(all_values) if all_values else 50
             now = datetime.utcnow()
-            # Compute raw final weights
             norm_weights, upvotes_list = get_restaurant_weights(subs)
+            print(f"[MODALDEBUG] Upvotes list: {upvotes_list}", flush=True)
+            print(f"[MODALDEBUG] Upvote cache: {upvote_cache}", flush=True)
             # Weighted average for this restaurant (live)
             total_weight = sum(norm_weights)
             if total_weight == 0:
@@ -855,6 +882,7 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
                 upvotes = upvotes_list[i]
                 final_weight = norm_weights[i]
                 user_has_upvoted = has_user_upvoted(s.id, user_id) if user_id else False
+                print(f"[MODALDEBUG] Submission {s.id}: upvotes={upvotes}, user_has_upvoted={user_has_upvoted}", flush=True)
                 upvote_btn = dbc.Button(
                     [
                         html.Span("▲", style={"color": prussian_blue if user_has_upvoted else "#aaa", "fontWeight": "bold", "fontSize": 18}),
@@ -916,19 +944,30 @@ def fast_upvote_refresh(n_clicks_list, selected_data, profile_body):
     import json
     try:
         btn_id = json.loads(triggered)
+        if btn_id.get("type") != "upvote-btn":
+            return dash.no_update
         submission_id = btn_id["index"]
     except Exception:
         return dash.no_update
     user_id = get_current_user_id()
     if not user_id:
         return dash.no_update
+    # Re-query all submissions for this restaurant (sorted as in modal)
     with SessionLocal() as db:
-        sub = db.query(Submission).filter(Submission.id == submission_id).first()
-        if not sub:
+        subs = db.query(Submission).filter(
+            Submission.name == selected_data.get("name"),
+            Submission.category == selected_data.get("category")
+        ).order_by(sa.desc(Submission.date_submitted)).all()
+        # Find the index of the submission in the sorted list
+        idx = next((i for i, s in enumerate(subs) if s.id == submission_id), None)
+        if idx is None or not isinstance(n_clicks_list, list) or idx >= len(n_clicks_list):
             return dash.no_update
+        n_clicks = n_clicks_list[idx]
+        # Only toggle upvote if n_clicks is odd and > 0 (i.e., just clicked)
+        if n_clicks is None or n_clicks % 2 == 0 or n_clicks <= 0:
+            return dash.no_update
+        sub = subs[idx]
         toggle_upvote(submission_id, user_id, sub.category, sub.type)
-        # Re-query upvote count and user status for all submissions in this restaurant
-        subs = db.query(Submission).filter(Submission.name == selected_data.get("name"), Submission.category == selected_data.get("category")).all()
     # Rebuild modal body only
     subs = sorted(subs, key=lambda s: s.date_submitted or datetime.min, reverse=True)
     user_rows = []
