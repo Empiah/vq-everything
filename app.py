@@ -659,6 +659,37 @@ def get_main_chart_subs(filter_category=None):
         chart_counts.append(len(group))
     return chart_subs, chart_counts
 
+def get_main_chart_subs_from_list(subs):
+    if not subs:
+        return [], []
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for s in subs:
+        key = (s.name, s.category)
+        grouped[key].append(s)
+    chart_subs = []
+    chart_counts = []
+    for group in grouped.values():
+        norm_weights, _ = get_restaurant_weights(group)
+        total_weight = sum(norm_weights)
+        if total_weight == 0:
+            avg_value = sum(s.value for s in group) / len(group)
+            avg_quality = sum(s.quality for s in group) / len(group)
+        else:
+            avg_value = sum(s.value * w for s, w in zip(group, norm_weights)) / sum(norm_weights)
+            avg_quality = sum(s.quality * w for s, w in zip(group, norm_weights)) / sum(norm_weights)
+        s0 = group[0]
+        chart_subs.append(type('ChartSub', (), {
+            'name': s0.name,
+            'category': s0.category,
+            'type': s0.type,
+            'location': s0.location,
+            'value': avg_value,
+            'quality': avg_quality
+        }))
+        chart_counts.append(len(group))
+    return chart_subs, chart_counts
+
 # --- Update main chart callback ---
 @app.callback(
     Output("scatter-plot", "figure"),
@@ -716,12 +747,19 @@ def combined_scatter_and_remove(
             traceback.print_exc()
         deleted = True
     # Get submissions for chart
-    if filter_category and filter_category != "All":
-        subs = [s for s in get_submissions() if s.category == filter_category]
+    if show_mine and (user_id or user_email):
+        # Only show current user's submissions in chart
+        subs = get_user_submissions(user_id, user_email)
+        if filter_category and filter_category != "All":
+            subs = [s for s in subs if s.category == filter_category]
     else:
-        subs = get_submissions()
-    chart_subs, chart_counts = get_main_chart_subs(filter_category)
+        if filter_category and filter_category != "All":
+            subs = [s for s in get_submissions() if s.category == filter_category]
+        else:
+            subs = get_submissions()
+    chart_subs, chart_counts = get_main_chart_subs_from_list(subs)
     fig = go.Figure()
+    # Draw grid regions (flip axes: Value on x, Quality on y)
     for i in range(3):
         for j in range(3):
             fig.add_shape(type="rect",
@@ -732,9 +770,11 @@ def combined_scatter_and_remove(
                 line={"width": 1, "color": "#222"},
                 layer="below"
             )
+    # Draw bold grid lines (vertical for Value, horizontal for Quality)
     for k in range(1, 3):
         fig.add_shape(type="line", x0=k*100/3, x1=k*100/3, y0=0, y1=100, line={"color": "#222", "width": 2})
         fig.add_shape(type="line", y0=k*100/3, y1=k*100/3, x0=0, x1=100, line={"color": "#222", "width": 2})
+    # Add points (flip axes)
     if chart_subs:
         fig.add_trace(go.Scatter(
             x=[s.value for s in chart_subs],
@@ -815,6 +855,7 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
     triggered = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else None
     print(f"[MODALDEBUG] Modal triggered by: {triggered}", flush=True)
     if triggered == "close-profile-modal" and is_open:
+        # Reset selected-restaurant to None so clicking the same point will always open modal
         return False, dash.no_update, dash.no_update, None
     if triggered == "scatter-plot" and clickData:
         point = clickData["points"][0]
@@ -822,7 +863,7 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
         lines = text.split("<br>")
         name = lines[0] if len(lines) > 0 else ""
         category = lines[1] if len(lines) > 1 else ""
-        # Query DB for all submissions for this restaurant
+        # Always open modal, even if same restaurant as before
         with SessionLocal() as db:
             subs = db.query(Submission).filter(Submission.name == name, Submission.category == category).all()
         print(f"[MODALDEBUG] Submissions for {name}/{category}: {[s.id for s in subs]}", flush=True)
@@ -838,7 +879,6 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
             norm_weights, upvotes_list = get_restaurant_weights(subs)
             print(f"[MODALDEBUG] Upvotes list: {upvotes_list}", flush=True)
             print(f"[MODALDEBUG] Upvote cache: {upvote_cache}", flush=True)
-            # Weighted average for this restaurant (live)
             total_weight = sum(norm_weights)
             if total_weight == 0:
                 weighted_value = sum(s.value for s in subs) / len(subs)
@@ -950,6 +990,7 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
                     html.Tbody(user_rows)
                 ], bordered=True, hover=True, size="sm", style={"marginBottom": 0, "marginTop": 0}),
             ], style={"padding": "0 8px 8px 8px", "width": "100%"})
+        # Always update selected-restaurant so clicking the same point works
         return True, name, body, {"name": name, "category": category}
     return is_open, dash.no_update, dash.no_update, selected_data
 
