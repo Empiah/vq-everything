@@ -573,15 +573,15 @@ def get_restaurant_weights(subs, vote_factor=1.0, date_factor=0.3):
 def get_date_weight(sub, now=None):
     """
     Returns a recency weight for a submission.
-    More recent = higher weight. Exponential decay, 30 days half-life.
+    More recent = higher weight. Exponential decay, 90 days half-life. Lower bound 0.25.
     """
     if not hasattr(sub, "date_submitted") or not sub.date_submitted:
         return 1.0
     if now is None:
         now = datetime.utcnow()
     days_ago = (now - sub.date_submitted).days
-    # Half-life of 30 days: weight = 0.5 ** (days_ago / 30)
-    return 0.5 ** (days_ago / 30)
+    # Half-life of 90 days: weight = 0.5 ** (days_ago / 90), but never less than 0.25
+    return max(0.25, 0.5 ** (days_ago / 90))
 
 # --- Update main chart to use weights instead of averages ---
 def get_main_chart_subs(filter_category=None):
