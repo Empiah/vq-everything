@@ -84,12 +84,18 @@ def get_submissions():
         return db.query(Submission).all()
 
 # --- Helper: get submissions for a user ---
-def get_user_submissions(user_id):
-    # Only return submissions where user_id matches exactly (do not fallback to get_current_user_email)
-    if not user_id:
+def get_user_submissions(user_id_or_email):
+    # Return submissions where user_id matches name or email (case-insensitive)
+    if not user_id_or_email:
         return []
     with SessionLocal() as db:
-        return db.query(Submission).filter(Submission.user_id == user_id).all()
+        user_id_or_email = user_id_or_email.strip().lower()
+        return db.query(Submission).filter(
+            sa.or_(
+                sa.func.lower(Submission.user_id) == user_id_or_email,
+                sa.func.lower(Submission.user_id) == (user_id_or_email if '@' in user_id_or_email else None)
+            )
+        ).all()
 
 def get_current_user_email():
     user = get_current_user()
@@ -987,3 +993,21 @@ def fast_upvote_refresh(n_clicks_list, selected_data, profile_body):
         ], bordered=True, hover=True, size="sm", style={"marginBottom": 0, "marginTop": 0}),
     ], style={"padding": "0 8px 8px 8px", "width": "100%"})
     return body
+
+# --- Add callback to update login/logout section ---
+@app.callback(
+    Output("login-section", "children"),
+    [Input("login-state", "data"), Input("url", "pathname")],
+    prevent_initial_call=False
+)
+def update_login_section(_, __):
+    return get_login_section()
+
+# --- Add callback to update show-mine-toggle from radio button ---
+@app.callback(
+    Output("show-mine-toggle", "data"),
+    Input("show-mine-radio", "value"),
+    prevent_initial_call=False
+)
+def update_show_mine_toggle(radio_value):
+    return radio_value
