@@ -84,18 +84,17 @@ def get_submissions():
         return db.query(Submission).all()
 
 # --- Helper: get submissions for a user ---
-def get_user_submissions(user_id_or_email):
+def get_user_submissions(user_name, user_email=None):
     # Return submissions where user_id matches name or email (case-insensitive)
-    if not user_id_or_email:
+    if not user_name and not user_email:
         return []
     with SessionLocal() as db:
-        user_id_or_email = user_id_or_email.strip().lower()
-        return db.query(Submission).filter(
-            sa.or_(
-                sa.func.lower(Submission.user_id) == user_id_or_email,
-                sa.func.lower(Submission.user_id) == (user_id_or_email if '@' in user_id_or_email else None)
-            )
-        ).all()
+        filters = []
+        if user_name:
+            filters.append(sa.func.lower(Submission.user_id) == user_name.strip().lower())
+        if user_email:
+            filters.append(sa.func.lower(Submission.user_id) == user_email.strip().lower())
+        return db.query(Submission).filter(sa.or_(*filters)).all()
 
 def get_current_user_email():
     user = get_current_user()
@@ -155,9 +154,9 @@ def get_averaged_subs(subs):
     return avg_subs
 
 # --- Always render the user-table DataTable, even if empty ---
-def get_user_table(user_id=None, show_mine=True, filter_category="All"):
+def get_user_table(user_id=None, show_mine=True, filter_category="All", user_email=None):
     if show_mine and user_id:
-        subs = get_user_submissions(user_id)
+        subs = get_user_submissions(user_id, user_email)
     else:
         subs = get_submissions()
     if filter_category and filter_category != "All":
@@ -682,14 +681,14 @@ def combined_scatter_and_remove(filter_category, show_mine, active_cell, n_click
     table = None
     if show_mine:
         # Show user's own submissions only
-        if user_id:
-            table = get_user_table(user_id, show_mine=True, filter_category=filter_category)
+        if user_id or user_email:
+            table = get_user_table(user_id, show_mine=True, filter_category=filter_category, user_email=user_email)
         else:
             table = html.Div()
     else:
         # Show all submissions only for admin
         if is_admin:
-            table = get_user_table(user_id, show_mine=False, filter_category=filter_category)
+            table = get_user_table(user_id, show_mine=False, filter_category=filter_category, user_email=user_email)
         else:
             table = html.Div()
     if table is None:
