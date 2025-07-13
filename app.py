@@ -393,9 +393,9 @@ def get_initial_figure():
             dict(x=0.5, y=1.08, text="Mod Value", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
             dict(x=5/6, y=1.08, text="Expensive", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
             # Quality (y) subtitles at the left, vertical (use xref='paper')
-            dict(x=-0.13, y=1/6, text="High Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=-0.13, y=1/6, text="Low Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
             dict(x=-0.13, y=0.5, text="Mod Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
-            dict(x=-0.13, y=5/6, text="Low Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=-0.13, y=5/6, text="High Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
         ]
     )
     return fig
@@ -812,9 +812,9 @@ def combined_scatter_and_remove(
             dict(x=1/6, y=1.08, text="Cheap", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
             dict(x=0.5, y=1.08, text="Mod Value", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
             dict(x=5/6, y=1.08, text="Expensive", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
-            dict(x=-0.13, y=1/6, text="High Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=-0.13, y=1/6, text="Low Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
             dict(x=-0.13, y=0.5, text="Mod Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
-            dict(x=-0.13, y=5/6, text="Low Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=-0.13, y=5/6, text="High Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
         ]
     )
     # Table logic
