@@ -1,106 +1,45 @@
 # Value and Quality Everything
 
-A modern Dash web app for collecting and visualizing user submissions on a 3x3 value/quality scatter plot grid. Features Google login, SQLite storage, and a beautiful Plotly chart.
+A web app for collecting and visualizing user ratings on a 3x3 value/quality scatter plot. Users log in with Google, submit ratings for restaurants across categories, and see how their scores compare to the community.
 
 ## Features
 
-- Google OAuth 2.0 login (secure, no passwords stored)
-- Submission form: value (0-100), quality (0-100), type, category, name, location
-- All data stored in SQLite (local file, not in git)
-- Interactive 3x3 scatter plot grid (Plotly)
-- Filter by category and user ("All Submissions" or "My Submissions")
-- Responsive, mobile-friendly UI (Dash + Bootstrap)
-- All secrets loaded from `.env` (never in git)
+- Google OAuth 2.0 login
+- Submission form with value (0-100%), quality (0-100%), category, name, and location
+- Interactive 3x3 scatter plot grid with category and user filtering
+- Restaurant profile modals with weighted scoring and upvote system
+- Google Places integration — search for restaurants to auto-fill name, location, and display Google rating/review data
+- SQLite database with persistent storage support
+- Responsive UI (Dash + Bootstrap)
 
-## Setup
+## Environment Variables
 
-1. **Clone the repo:**
+| Variable | Required | Description |
+|---|---|---|
+| `FLASK_SECRET_KEY` | Yes | Secret key for Flask session management |
+| `ADMIN_EMAIL` | Yes | Admin user's email address |
+| `GOOGLE_OAUTH_CLIENT_ID` | Yes | Google OAuth 2.0 client ID |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Yes | Google OAuth 2.0 client secret |
+| `GOOGLE_MAPS_API_KEY` | No | Google Places API key (enables restaurant search) |
+| `DATABASE_URL` | No | Database URL (defaults to `sqlite:///./submissions.db`) |
 
-   ```sh
-   git clone https://github.com/yourusername/your-repo-name.git
-   cd your-repo-name
-   ```
+## Local Setup
 
-2. **Create a virtual environment (recommended):**
+```sh
+git clone https://github.com/Empiah/vq-everything.git
+cd vq-everything
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env  # fill in your credentials
+python app.py
+```
 
-   ```sh
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
+The app will be available at http://127.0.0.1:8050
 
-3. **Install dependencies:**
+## Deployment
 
-   ```sh
-   pip install -r requirements.txt
-   ```
-
-4. **Create a `.env` file:**
-   - Copy `.env.example` to `.env` and fill in your Google OAuth credentials and a strong Flask secret key.
-
-5. **Run the app locally:**
-
-   ```sh
-   python app.py
-   ```
-
-   The app will be available at [http://127.0.0.1:8050](http://127.0.0.1:8050)
-
-## Deploying to Production (Render.com Example)
-
-Render.com is a simple, reliable, and affordable way to deploy Python web apps like this one. The free tier is great for demos and light use.
-
-### 1. Push your code to GitHub
-
-Make sure your latest code is committed and pushed to a GitHub repository.
-
-### 2. Create a new Web Service on Render
-
-- Go to https://dashboard.render.com/
-- Click **New +** > **Web Service**
-- Connect your GitHub account and select your repo
-- For **Environment**, choose `Python 3`
-- For **Build Command**, enter:
-  ```sh
-  pip install -r requirements.txt
-  ```
-- For **Start Command**, enter:
-  ```sh
-  gunicorn app:app
-  ```
-- For **Instance Type**, the free tier is fine for most use cases
-
-### 3. Add Environment Variables
-
-- In the Render dashboard, go to your service's **Environment** tab
-- Add all variables from your `.env` (except secrets—never commit `.env` to git)
-- Example:
-  - `GOOGLE_OAUTH_CLIENT_ID=...`
-  - `GOOGLE_OAUTH_CLIENT_SECRET=...`
-  - `FLASK_SECRET_KEY=...`
-
-### 4. Persistent SQLite Storage (Optional)
-
-By default, SQLite data will be lost on redeploy. For persistent storage:
-- Go to the **Disks** tab in your Render service
-- Add a disk (e.g., `/data`, 1GB is enough)
-- In your code, change the database URL to:
-  ```python
-  DATABASE_URL = "sqlite:////data/submissions.db"
-  ```
-- Commit and push this change
-- Your data will now persist across deploys
-
-### 5. Deploy!
-
-- Click **Manual Deploy** or push to your repo to trigger a deploy
-- Your app will be live at the provided URL
-
----
-
-## Security
-
-- `.env` and `submissions.db` are excluded from git by `.gitignore`.
-- Never commit secrets or the database to your repo.
+Hosted on [Render](https://render.com). Set the environment variables above in the Render dashboard, use `gunicorn app:app` as the start command, and attach a persistent disk for SQLite storage.
 
 ## License
 
