@@ -779,13 +779,11 @@ def get_main_chart_subs_from_list(subs):
     State("category", "value"),
     State("name", "value"),
     State("location", "value"),
-    State("category-filter", "value"),
-    State("show-mine-toggle", "data"),
     # No prevent_initial_call so it runs on page load
 )
 def combined_scatter_and_remove(
     filter_category, show_mine, active_cell, n_clicks, form_alert, modal_is_open,
-    data, login_state, value, quality, type_, category, name, location, filter_category2, show_mine2
+    data, login_state, value, quality, type_, category, name, location
 ):
     ctx = callback_context
     user_id = None
@@ -1246,12 +1244,20 @@ def update_show_mine_toggle(radio_value):
     Output("places-search", "options"),
     Output("places-results", "data"),
     Input("places-search", "search_value"),
+    State("places-search", "value"),
+    State("places-results", "data"),
     State("location", "value"),
     prevent_initial_call=True,
 )
-def update_places_options(search_value, location):
+def update_places_options(search_value, current_value, cached_results, location):
+    # After a selection, search_value clears — preserve the selected option so Dash
+    # doesn't drop the value because it's no longer in the options list.
+    if current_value and cached_results and current_value in cached_results:
+        if not search_value or len(search_value) < 4:
+            r = cached_results[current_value]
+            return [{"label": f"{r['name']} — {r['address']}", "value": current_value}], dash.no_update
     if not search_value or len(search_value) < 4:
-        return [], {}
+        return dash.no_update, dash.no_update
     results = search_places(search_value, location)
     options, lookup = _places_to_options(results)
     return options, lookup
@@ -1332,6 +1338,8 @@ def enable_submit(value, quality, type_, category, name, location, login_childre
 # --- Handle submission ---
 @app.callback(
     Output("form-alert", "children"),
+    Output("places-search", "value"),
+    Output("places-search", "options"),
     Input("submit-btn", "n_clicks"),
     [State("value", "value"),
      State("quality", "value"),
@@ -1344,14 +1352,14 @@ def enable_submit(value, quality, type_, category, name, location, login_childre
 )
 def handle_submit(n_clicks, value, quality, type_, category, name, location, place_data):
     if not n_clicks:
-        return ""
+        return "", dash.no_update, dash.no_update
     # Validate again
     if value is None or quality is None or not type_ or not category or not name or not location:
-        return dbc.Alert("Please fill in all fields.", color="danger")
+        return dbc.Alert("Please fill in all fields.", color="danger"), dash.no_update, dash.no_update
     # Check login
     user = get_current_user()
     if not user:
-        return dbc.Alert("You must be logged in to submit.", color="danger")
+        return dbc.Alert("You must be logged in to submit.", color="danger"), dash.no_update, dash.no_update
     # Add submission
     try:
         data = {
@@ -1368,9 +1376,10 @@ def handle_submit(n_clicks, value, quality, type_, category, name, location, pla
             data["google_review_count"] = place_data.get("review_count")
             data["google_price_level"] = place_data.get("price_level")
         add_submission(data)
-        return dbc.Alert("Submission successful!", color="success")
+        # Reset the places search on success (clears name + info card via on_place_selected)
+        return dbc.Alert("Submission successful!", color="success"), None, []
     except Exception as e:
-        return dbc.Alert(f"Error: {e}", color="danger")
+        return dbc.Alert(f"Error: {e}", color="danger"), dash.no_update, dash.no_update
 
 @app.server.route("/logout")
 def logout():
