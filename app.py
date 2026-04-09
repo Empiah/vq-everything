@@ -20,12 +20,13 @@ from dash import dash_table  # Updated import for dash_table
 from datetime import datetime
 from dash.dependencies import ALL
 
-print(f"[ABSDEBUG] Loading app.py from {__file__}", flush=True)
-
 # Load environment variables from .env
 load_dotenv()
 
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
+_admin_email_raw = os.getenv("ADMIN_EMAIL", "").strip()
+if not _admin_email_raw:
+    raise ValueError("ADMIN_EMAIL environment variable must be set to a non-empty email address")
+ADMIN_EMAIL = _admin_email_raw.lower()
 
 # --- Database setup (SQLite, persistent for Render) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./submissions.db")
@@ -35,13 +36,11 @@ if DATABASE_URL.startswith("sqlite"):
         connect_args={"check_same_thread": False, "timeout": 30},
         # Use default isolation_level (None) for transactional mode
     )
-    print("[DB] SQLite engine created with timeout=30, check_same_thread=False, default isolation_level (transactional)", flush=True)
 else:
     engine = sa.create_engine(
         DATABASE_URL,
         isolation_level=None  # Use default for non-SQLite
     )
-    print(f"[DB] Engine created for {DATABASE_URL}", flush=True)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -139,40 +138,24 @@ def delete_all_submissions():
 def delete_submission_real(sub_id, user_id, user_email=None):
     import sys
     import traceback
-    import os
-    print(f"[DEBUG] delete_submission_real PID: {os.getpid()}", flush=True)
-    admin_env = os.getenv("ADMIN_EMAIL", "admin@example.com").strip().lower()
     norm_user_id = (user_id or "").strip().lower()
     norm_user_email = (user_email or "").strip().lower()
-    print(f"[DEBUG] admin_env={admin_env}, norm_user_id={norm_user_id}, norm_user_email={norm_user_email}", flush=True)
     try:
-        print(f"[DEBUG] About to create SessionLocal() for sub_id={sub_id}", flush=True)
         db = SessionLocal()
-        print(f"[DEBUG] Created SessionLocal() for sub_id={sub_id}", flush=True)
         with db:
-            print(f"[DEBUG] Opened DB session in delete_submission_real for sub_id={sub_id}", flush=True)
-            if norm_user_id == admin_env or norm_user_email == admin_env:
-                print(f"[DEBUG] ADMIN DELETE PATH for sub_id={sub_id}", flush=True)
-                match_count = db.query(Submission).filter(Submission.id == sub_id).count()
-                print(f"[DEBUG] ADMIN: submissions matching sub_id={sub_id}: {match_count}", flush=True)
-                upvotes_deleted = db.query(SubmissionUpvote).filter(SubmissionUpvote.submission_id == sub_id).delete(synchronize_session=False)
-                subs_deleted = db.query(Submission).filter(Submission.id == sub_id).delete(synchronize_session=False)
+            if norm_user_id == ADMIN_EMAIL or norm_user_email == ADMIN_EMAIL:
+                db.query(SubmissionUpvote).filter(SubmissionUpvote.submission_id == sub_id).delete(synchronize_session=False)
+                db.query(Submission).filter(Submission.id == sub_id).delete(synchronize_session=False)
                 db.commit()
-                print(f"[DEBUG] ADMIN DELETE: upvotes_deleted={upvotes_deleted}, subs_deleted={subs_deleted}", flush=True)
-                print(f"[DEBUG] ADMIN DELETE: committed for sub_id={sub_id}", flush=True)
             else:
                 sub = db.query(Submission).filter(
                     Submission.id == sub_id,
                     sa.or_(sa.func.lower(Submission.user_id) == norm_user_id, sa.func.lower(Submission.user_id) == norm_user_email)
                 ).first()
                 if sub:
-                    print(f"[DEBUG] USER DELETE PATH for sub_id={sub_id}", flush=True)
-                    upvotes_deleted = db.query(SubmissionUpvote).filter(SubmissionUpvote.submission_id == sub_id).delete(synchronize_session=False)
+                    db.query(SubmissionUpvote).filter(SubmissionUpvote.submission_id == sub_id).delete(synchronize_session=False)
                     db.delete(sub)
                     db.commit()
-                    print(f"[DEBUG] USER DELETE: upvotes_deleted={upvotes_deleted}, sub_id={sub_id}", flush=True)
-                    print(f"[DEBUG] USER DELETE: committed for sub_id={sub_id}", flush=True)
-        print(f"[DEBUG] delete_submission_real exit for sub_id={sub_id}", flush=True)
     except Exception as e:
         print(f"[ERROR] Exception in delete_submission_real for sub_id={sub_id}: {e}", flush=True)
         traceback.print_exc()
@@ -279,7 +262,10 @@ app.title = "VQ Everything"
 app.server.register_blueprint(google_bp, url_prefix="/login")
 
 # Set Flask secret key for session management and OAuth
-app.server.secret_key = os.getenv("FLASK_SECRET_KEY")
+_flask_secret_key = os.getenv("FLASK_SECRET_KEY", "").strip()
+if not _flask_secret_key:
+    raise ValueError("FLASK_SECRET_KEY environment variable must be set and non-empty")
+app.server.secret_key = _flask_secret_key
 
 # Helper to get current user info
 from flask import session as flask_session
@@ -296,16 +282,13 @@ def get_current_user():
         from flask import session as flask_session
         user_info = flask_session.get("user_info")
         if user_info:
-            print("[UserCache] Returning cached Google user info from session.")
             return user_info
         if "google_oauth_token" not in flask_session:
             return None
-        print("[UserCache] Fetching Google user info from API...")
         resp = google.get("/oauth2/v2/userinfo")
         if resp.ok:
             user_info = resp.json()
             flask_session["user_info"] = user_info
-            print("[UserCache] Google user info cached in session.")
             return user_info
     except Exception:
         return None
@@ -521,7 +504,6 @@ import time
 def load_upvote_cache():
     """Load all upvotes from the database into the in-memory cache."""
     global upvote_cache, upvote_user_cache
-    print(f"[CACHEDEBUG] load_upvote_cache called", flush=True)
     with upvote_lock:
         upvote_cache.clear()
         upvote_user_cache.clear()
@@ -531,8 +513,6 @@ def load_upvote_cache():
                 upvote_cache[upvote.submission_id] = upvote_cache.get(upvote.submission_id, 0) + 1
                 user_set = upvote_user_cache.setdefault(upvote.submission_id, set())
                 user_set.add(upvote.voter_id)
-    print(f"[CACHEDEBUG] upvote_cache after load: {upvote_cache}", flush=True)
-    print(f"[CACHEDEBUG] upvote_user_cache after load: {upvote_user_cache}", flush=True)
 
 # Global upvote cache and lock
 upvote_cache = {}
@@ -553,19 +533,16 @@ def has_user_upvoted(submission_id, voter_id):
         return voter_id in upvote_user_cache.get(submission_id, set())
 
 def toggle_upvote(submission_id, voter_id, category, type_):
-    print(f"[CACHEDEBUG] toggle_upvote called for submission_id={submission_id}, voter_id={voter_id}", flush=True)
     with upvote_lock:
         user_set = upvote_user_cache.setdefault(submission_id, set())
         if voter_id in user_set:
             user_set.remove(voter_id)
             upvote_cache[submission_id] = upvote_cache.get(submission_id, 0) - 1
             pending_upvote_changes.append((submission_id, voter_id, category, type_, "remove"))
-            print(f"[CACHEDEBUG] upvote REMOVED: {upvote_cache}", flush=True)
         else:
             user_set.add(voter_id)
             upvote_cache[submission_id] = upvote_cache.get(submission_id, 0) + 1
             pending_upvote_changes.append((submission_id, voter_id, category, type_, "add"))
-            print(f"[CACHEDEBUG] upvote ADDED: {upvote_cache}", flush=True)
     flush_upvote_changes()
 
 def flush_upvote_changes():
@@ -727,23 +704,15 @@ def combined_scatter_and_remove(
         user_email = None
     norm_user_id = (user_id or "").strip().lower()
     norm_user_email = (user_email or "").strip().lower()
-    admin_env = os.getenv("ADMIN_EMAIL", "admin@example.com").strip().lower()
-    is_admin = (norm_user_email == admin_env) or (norm_user_id == admin_env)
+    is_admin = (norm_user_email == ADMIN_EMAIL) or (norm_user_id == ADMIN_EMAIL)
     deleted = False
     # Remove action
     if ctx.triggered and ctx.triggered[0]["prop_id"].startswith("user-table.active_cell") and active_cell and active_cell.get("column_id") == "remove":
         row = data[active_cell["row"]]
-        print(f"[DEBUG] Attempting delete: row_id={row['id']} user_id={user_id} user_email={user_email} is_admin={is_admin}")
-        print(f"[ABSDEBUG] About to call delete_submission for row_id={row['id']}", flush=True)
-        print(f"[ABSDEBUG] delete_submission_real ref: {delete_submission_real}", flush=True)
-        print(f"[ABSDEBUG] CALLBACK PID: {os.getpid()}", flush=True)
         try:
-            print(f"[ABSDEBUG] About to actually CALL delete_submission_real for row_id={row['id']}", flush=True)
             delete_submission_real(row["id"], user_id, user_email)
-            print(f"[ABSDEBUG] Finished call to delete_submission_real for row_id={row['id']}", flush=True)
         except Exception as e:
             import traceback
-            print(f"[ABSDEBUG] Exception when calling delete_submission_real: {e}", flush=True)
             traceback.print_exc()
         deleted = True
     # Get submissions for chart
@@ -853,7 +822,6 @@ def combined_scatter_and_remove(
 def display_profile_modal(clickData, close_clicks, is_open, selected_data):
     ctx = callback_context
     triggered = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else None
-    print(f"[MODALDEBUG] Modal triggered by: {triggered}", flush=True)
     if triggered == "close-profile-modal" and is_open:
         # Reset selected-restaurant to None so clicking the same point will always open modal
         return False, dash.no_update, dash.no_update, None
@@ -866,7 +834,6 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
         # Always open modal, even if same restaurant as before
         with SessionLocal() as db:
             subs = db.query(Submission).filter(Submission.name == name, Submission.category == category).all()
-        print(f"[MODALDEBUG] Submissions for {name}/{category}: {[s.id for s in subs]}", flush=True)
         if not subs:
             body = html.Div("No submissions found.")
         else:
@@ -877,8 +844,6 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
             m = sum(all_values) / len(all_values) if all_values else 50
             now = datetime.utcnow()
             norm_weights, upvotes_list = get_restaurant_weights(subs)
-            print(f"[MODALDEBUG] Upvotes list: {upvotes_list}", flush=True)
-            print(f"[MODALDEBUG] Upvote cache: {upvote_cache}", flush=True)
             total_weight = sum(norm_weights)
             if total_weight == 0:
                 weighted_value = sum(s.value for s in subs) / len(subs)
@@ -946,7 +911,6 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
                 upvotes = upvotes_list[i]
                 final_weight = norm_weights[i]
                 user_has_upvoted = has_user_upvoted(s.id, user_id) if user_id else False
-                print(f"[MODALDEBUG] Submission {s.id}: upvotes={upvotes}, user_has_upvoted={user_has_upvoted}", flush=True)
                 upvote_btn = dbc.Button(
                     [
                         html.Span("▲", style={"color": prussian_blue if user_has_upvoted else "#aaa", "fontWeight": "bold", "fontSize": 18}),
@@ -1154,26 +1118,13 @@ def fast_upvote_refresh(n_clicks_list, selected_data, profile_body):
 
 # --- DB startup test ---
 def db_startup_test():
-    import os
     import sys
     import traceback
-    print(f"[DBTEST] Process PID: {os.getpid()}", flush=True)
-    try:
-        # Try to open DB file for writing
-        db_path = DATABASE_URL.replace('sqlite:///', '')
-        with open(db_path, 'a') as f:
-            f.write('')
-        print(f"[DBTEST] DB file {db_path} is writable.", flush=True)
-    except Exception as e:
-        print(f"[DBTEST] Cannot write to DB file: {e}", flush=True)
     try:
         with SessionLocal() as db:
-            print("[DBTEST] Opened DB session.", flush=True)
-            # Try a simple query
-            count = db.query(Submission).count()
-            print(f"[DBTEST] Submission count: {count}", flush=True)
+            db.query(Submission).count()
     except Exception as e:
-        print(f"[DBTEST] Exception opening DB session: {e}", flush=True)
+        print(f"[ERROR] DB startup check failed: {e}", flush=True)
         traceback.print_exc()
         sys.stdout.flush()
 db_startup_test()
