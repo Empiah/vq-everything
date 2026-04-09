@@ -35,7 +35,7 @@ _KNOWN_CITIES = ["London", "New York", "Paris", "Tokyo", "Berlin", "Sydney", "Ro
 
 def search_places(query, location=None):
     """Search Google Places API for restaurants matching query. Returns list of dicts."""
-    if not GOOGLE_MAPS_API_KEY or not query or len(query) < 2:
+    if not GOOGLE_MAPS_API_KEY or not query or len(query) < 4:
         return []
     try:
         search_query = query
@@ -1248,7 +1248,7 @@ def update_show_mine_toggle(radio_value):
     prevent_initial_call=True,
 )
 def update_places_options(search_value, location):
-    if not search_value or len(search_value) < 2:
+    if not search_value or len(search_value) < 4:
         return []
     results = search_places(search_value, location)
     return [{"label": f"{r['name']} — {r['address']}", "value": r["place_id"]} for r in results]
