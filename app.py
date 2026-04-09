@@ -7,6 +7,7 @@ Dash app for Value and Quality Everything
 """
 
 import os
+import requests
 import dash
 from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
@@ -27,6 +28,67 @@ _admin_email_raw = os.getenv("ADMIN_EMAIL", "").strip()
 if not _admin_email_raw:
     raise ValueError("ADMIN_EMAIL environment variable must be set to a non-empty email address")
 ADMIN_EMAIL = _admin_email_raw.lower()
+
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+
+_KNOWN_CITIES = ["London", "New York", "Paris", "Tokyo", "Berlin", "Sydney", "Rome", "Toronto", "San Francisco", "Singapore"]
+
+def search_places(query, location=None):
+    """Search Google Places API for restaurants matching query. Returns list of dicts."""
+    if not GOOGLE_MAPS_API_KEY or not query or len(query) < 4:
+        return []
+    try:
+        search_query = query
+        if location:
+            search_query = f"{query} {location}"
+        resp = requests.get(
+            "https://maps.googleapis.com/maps/api/place/textsearch/json",
+            params={"query": search_query, "type": "restaurant", "key": GOOGLE_MAPS_API_KEY},
+            timeout=5,
+        )
+        if resp.ok:
+            return [
+                {"place_id": p["place_id"], "name": p["name"], "address": p.get("formatted_address", "")}
+                for p in resp.json().get("results", [])[:8]
+            ]
+    except Exception:
+        pass
+    return []
+
+def get_place_details(place_id):
+    """Fetch rating, review count, price level and name for a place_id. Returns dict or None."""
+    if not GOOGLE_MAPS_API_KEY or not place_id:
+        return None
+    try:
+        resp = requests.get(
+            "https://maps.googleapis.com/maps/api/place/details/json",
+            params={
+                "place_id": place_id,
+                "fields": "name,rating,user_ratings_total,price_level,formatted_address",
+                "key": GOOGLE_MAPS_API_KEY,
+            },
+            timeout=5,
+        )
+        if resp.ok:
+            r = resp.json().get("result", {})
+            return {
+                "place_id": place_id,
+                "name": r.get("name"),
+                "rating": r.get("rating"),
+                "review_count": r.get("user_ratings_total"),
+                "price_level": r.get("price_level"),
+                "address": r.get("formatted_address", ""),
+            }
+    except Exception:
+        pass
+    return None
+
+def city_from_address(address):
+    """Return a known city name found in the address string, or None."""
+    for city in _KNOWN_CITIES:
+        if city.lower() in address.lower():
+            return city
+    return None
 
 # --- Database setup (SQLite, persistent for Render) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./submissions.db")
@@ -55,6 +117,10 @@ class Submission(Base):
     location = sa.Column(sa.String, nullable=False)
     user_id = sa.Column(sa.String, nullable=True)  # Changed from Integer to String for email
     date_submitted = sa.Column(sa.DateTime, nullable=True, default=datetime.utcnow)
+    google_place_id = sa.Column(sa.String, nullable=True)
+    google_rating = sa.Column(sa.Float, nullable=True)
+    google_review_count = sa.Column(sa.Integer, nullable=True)
+    google_price_level = sa.Column(sa.Integer, nullable=True)
 
 class SubmissionUpvote(Base):
     __tablename__ = "submission_upvotes"
@@ -86,6 +152,21 @@ try:
         conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_upvotes_voter_id ON submission_upvotes (voter_id);"))
 except Exception as e:
     print(f"[WARNING] Could not create indexes: {e}")
+
+# --- DB migration: add Google Places columns to existing databases ---
+_google_cols = [
+    ("google_place_id", "VARCHAR"),
+    ("google_rating", "FLOAT"),
+    ("google_review_count", "INTEGER"),
+    ("google_price_level", "INTEGER"),
+]
+for _col, _type in _google_cols:
+    try:
+        with engine.connect() as _conn:
+            _conn.execute(sa.text(f"ALTER TABLE submissions ADD COLUMN {_col} {_type}"))
+            _conn.commit()
+    except Exception:
+        pass  # Column already exists
 
 # --- Helper: get all submissions ---
 def get_submissions():
@@ -401,6 +482,7 @@ app.layout = dbc.Container([
     dcc.Store(id="login-state"),
     dcc.Store(id="show-mine-toggle", data=False),  # Default to False (All Submissions)
     dcc.Store(id="selected-restaurant"),  # Store for clicked restaurant info
+    dcc.Store(id="place-data"),  # Google Places data for current form selection
     dbc.Modal(
         [
             dbc.ModalHeader(dbc.ModalTitle(id="profile-title")),
@@ -466,7 +548,18 @@ app.layout = dbc.Container([
                         ]], value="Steak", searchable=True),
                         dbc.Label("Name"),
                         dbc.Input(id="name", type="text", maxLength=100, required=True),
-                        dbc.Label("Location"),
+                        dbc.Label("Search Google Places", style={"marginTop": 8, "fontSize": "0.85rem", "color": "#555"}),
+                        dcc.Dropdown(
+                            id="places-search",
+                            options=[],
+                            value=None,
+                            searchable=True,
+                            clearable=True,
+                            placeholder="Type to search for restaurant on Google...",
+                            style={"fontSize": "0.9rem"},
+                        ),
+                        html.Div(id="google-info-card", style={"marginTop": 4}),
+                        dbc.Label("Location", style={"marginTop": 8}),
                         dcc.Dropdown(id="location", options=[{"label": c, "value": c} for c in ["London", "New York", "Paris", "Tokyo", "Berlin", "Sydney", "Rome", "Toronto", "San Francisco", "Singapore"]], value="London", searchable=True),
                         html.Br(),
                         dbc.Button("Submit", id="submit-btn", color="primary", style={"background": prussian_blue}, disabled=True),
@@ -1147,6 +1240,70 @@ def update_login_section(_, __):
 def update_show_mine_toggle(radio_value):
     return radio_value
 
+# --- Google Places: populate dropdown options as user types ---
+@app.callback(
+    Output("places-search", "options"),
+    Input("places-search", "search_value"),
+    State("location", "value"),
+    prevent_initial_call=True,
+)
+def update_places_options(search_value, location):
+    if not search_value or len(search_value) < 4:
+        return []
+    results = search_places(search_value, location)
+    return [{"label": f"{r['name']} — {r['address']}", "value": r["place_id"]} for r in results]
+
+
+# --- Google Places: on place selected, fill name/location and store place data ---
+@app.callback(
+    Output("place-data", "data"),
+    Output("name", "value"),
+    Output("location", "value"),
+    Input("places-search", "value"),
+    State("location", "value"),
+    prevent_initial_call=True,
+)
+def on_place_selected(place_id, current_location):
+    if not place_id:
+        return None, dash.no_update, dash.no_update
+    details = get_place_details(place_id)
+    if not details:
+        return None, dash.no_update, dash.no_update
+    detected_city = city_from_address(details.get("address", ""))
+    new_location = detected_city if detected_city else current_location
+    return details, details.get("name", ""), new_location
+
+
+# --- Google Places: render info card when place data changes ---
+@app.callback(
+    Output("google-info-card", "children"),
+    Input("place-data", "data"),
+    prevent_initial_call=True,
+)
+def render_google_info(place_data):
+    if not place_data:
+        return ""
+    rating = place_data.get("rating")
+    review_count = place_data.get("review_count")
+    price_level = place_data.get("price_level")
+    parts = []
+    if rating is not None:
+        filled = round(rating)
+        stars = "★" * filled + "☆" * (5 - filled)
+        parts.append(html.Span(f"{rating} {stars}", style={"color": "#f5a623", "fontWeight": "bold"}))
+    if review_count is not None:
+        parts.append(html.Span(f"  {review_count:,} reviews", style={"color": "#555"}))
+    if price_level is not None:
+        parts.append(html.Span("  " + "$" * price_level, style={"color": "#555"}))
+    if not parts:
+        return dbc.Alert("No Google rating data available.", color="secondary", style={"padding": "4px 10px", "fontSize": "0.85rem"})
+    return dbc.Alert(
+        [html.Strong("Google:  ")] + parts,
+        color="info",
+        style={"padding": "5px 10px", "fontSize": "0.85rem"},
+    )
+
+
 # --- Enable/disable submit button based on form validity and login ---
 @app.callback(
     Output("submit-btn", "disabled"),
@@ -1186,10 +1343,11 @@ def enable_submit(value, quality, type_, category, name, location, login_childre
      State("type", "value"),
      State("category", "value"),
      State("name", "value"),
-     State("location", "value")],
+     State("location", "value"),
+     State("place-data", "data")],
     prevent_initial_call=True
 )
-def handle_submit(n_clicks, value, quality, type_, category, name, location):
+def handle_submit(n_clicks, value, quality, type_, category, name, location, place_data):
     if not n_clicks:
         return ""
     # Validate again
@@ -1201,14 +1359,20 @@ def handle_submit(n_clicks, value, quality, type_, category, name, location):
         return dbc.Alert("You must be logged in to submit.", color="danger")
     # Add submission
     try:
-        add_submission({
+        data = {
             "value": value,
             "quality": quality,
             "type": type_,
             "category": category,
             "name": name,
-            "location": location
-        })
+            "location": location,
+        }
+        if place_data:
+            data["google_place_id"] = place_data.get("place_id")
+            data["google_rating"] = place_data.get("rating")
+            data["google_review_count"] = place_data.get("review_count")
+            data["google_price_level"] = place_data.get("price_level")
+        add_submission(data)
         return dbc.Alert("Submission successful!", color="success")
     except Exception as e:
         return dbc.Alert(f"Error: {e}", color="danger")
