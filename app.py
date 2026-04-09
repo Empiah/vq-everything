@@ -434,7 +434,7 @@ def get_initial_figure():
     fig.update_layout(
         autosize=False,
         width=500, height=500,
-        margin={"l": 110, "r": 20, "t": 90, "b": 40},
+        margin={"l": 80, "r": 20, "t": 65, "b": 40},
         xaxis={
             "range": [0, 100],
             "title": None,
@@ -850,7 +850,7 @@ def combined_scatter_and_remove(
     fig.update_layout(
         autosize=True,
         width=None, height=None,
-        margin={"l": 110, "r": 20, "t": 90, "b": 40},
+        margin={"l": 80, "r": 20, "t": 65, "b": 40},
         xaxis={
             "range": [0, 100],
             "title": None,
@@ -872,12 +872,12 @@ def combined_scatter_and_remove(
         plot_bgcolor="#fff",
         paper_bgcolor="#fff",
         annotations=[
-            dict(x=1/6, y=1.08, text="Cheap", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
-            dict(x=0.5, y=1.08, text="Mod Value", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
-            dict(x=5/6, y=1.08, text="Expensive", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
-            dict(x=-0.13, y=1/6, text="Low Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
-            dict(x=-0.13, y=0.5, text="Mod Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
-            dict(x=-0.13, y=5/6, text="High Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=1/6, y=1.03, text="Cheap", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
+            dict(x=0.5, y=1.03, text="Mod Value", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
+            dict(x=5/6, y=1.03, text="Expensive", showarrow=False, xref="paper", yref="paper", xanchor="center", yanchor="bottom", font=dict(size=18, color=prussian_blue)),
+            dict(x=-0.07, y=1/6, text="Low Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=-0.07, y=0.5, text="Mod Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
+            dict(x=-0.07, y=5/6, text="High Q", showarrow=False, xref="paper", yref="paper", xanchor="right", yanchor="middle", font=dict(size=18, color=prussian_blue), textangle=-90),
         ]
     )
     # Table logic
