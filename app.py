@@ -1246,12 +1246,19 @@ def update_show_mine_toggle(radio_value):
     Output("places-search", "options"),
     Output("places-results", "data"),
     Input("places-search", "search_value"),
+    State("places-search", "value"),
+    State("places-results", "data"),
     State("location", "value"),
     prevent_initial_call=True,
 )
-def update_places_options(search_value, location):
+def update_places_options(search_value, current_value, cached_results, location):
+    # Preserve the selected option when search text clears after selection
+    if current_value and cached_results and current_value in cached_results:
+        if not search_value or len(search_value) < 4:
+            r = cached_results[current_value]
+            return [{"label": f"{r['name']} — {r['address']}", "value": current_value}], dash.no_update
     if not search_value or len(search_value) < 4:
-        return [], {}
+        return dash.no_update, dash.no_update
     results = search_places(search_value, location)
     options, lookup = _places_to_options(results)
     return options, lookup
