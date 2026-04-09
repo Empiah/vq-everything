@@ -33,55 +33,47 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
 _KNOWN_CITIES = ["London", "New York", "Paris", "Tokyo", "Berlin", "Sydney", "Rome", "Toronto", "San Francisco", "Singapore"]
 
+_PRICE_LEVEL_MAP = {
+    "PRICE_LEVEL_FREE": 0,
+    "PRICE_LEVEL_INEXPENSIVE": 1,
+    "PRICE_LEVEL_MODERATE": 2,
+    "PRICE_LEVEL_EXPENSIVE": 3,
+    "PRICE_LEVEL_VERY_EXPENSIVE": 4,
+}
+
 def search_places(query, location=None):
-    """Search Google Places API for restaurants matching query. Returns list of dicts."""
+    """Search Google Places API (New) for restaurants matching query. Returns list of dicts."""
     if not GOOGLE_MAPS_API_KEY or not query or len(query) < 4:
         return []
     try:
         search_query = query
         if location:
             search_query = f"{query} {location}"
-        resp = requests.get(
-            "https://maps.googleapis.com/maps/api/place/textsearch/json",
-            params={"query": search_query, "type": "restaurant", "key": GOOGLE_MAPS_API_KEY},
+        resp = requests.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+                "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.priceLevel",
+            },
+            json={"textQuery": search_query, "includedType": "restaurant"},
             timeout=5,
         )
         if resp.ok:
             return [
-                {"place_id": p["place_id"], "name": p["name"], "address": p.get("formatted_address", "")}
-                for p in resp.json().get("results", [])[:8]
+                {
+                    "place_id": p["id"],
+                    "name": p.get("displayName", {}).get("text", ""),
+                    "address": p.get("formattedAddress", ""),
+                    "rating": p.get("rating"),
+                    "review_count": p.get("userRatingCount"),
+                    "price_level": _PRICE_LEVEL_MAP.get(p.get("priceLevel")),
+                }
+                for p in resp.json().get("places", [])[:8]
             ]
     except Exception:
         pass
     return []
-
-def get_place_details(place_id):
-    """Fetch rating, review count, price level and name for a place_id. Returns dict or None."""
-    if not GOOGLE_MAPS_API_KEY or not place_id:
-        return None
-    try:
-        resp = requests.get(
-            "https://maps.googleapis.com/maps/api/place/details/json",
-            params={
-                "place_id": place_id,
-                "fields": "name,rating,user_ratings_total,price_level,formatted_address",
-                "key": GOOGLE_MAPS_API_KEY,
-            },
-            timeout=5,
-        )
-        if resp.ok:
-            r = resp.json().get("result", {})
-            return {
-                "place_id": place_id,
-                "name": r.get("name"),
-                "rating": r.get("rating"),
-                "review_count": r.get("user_ratings_total"),
-                "price_level": r.get("price_level"),
-                "address": r.get("formatted_address", ""),
-            }
-    except Exception:
-        pass
-    return None
 
 def city_from_address(address):
     """Return a known city name found in the address string, or None."""
@@ -89,6 +81,16 @@ def city_from_address(address):
         if city.lower() in address.lower():
             return city
     return None
+
+def _places_to_options(results):
+    """Convert search_places results to Dropdown options + a lookup dict keyed by place_id."""
+    options = []
+    lookup = {}
+    for r in results:
+        pid = r["place_id"]
+        options.append({"label": f"{r['name']} — {r['address']}", "value": pid})
+        lookup[pid] = r
+    return options, lookup
 
 # --- Database setup (SQLite, persistent for Render) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./submissions.db")
@@ -483,6 +485,7 @@ app.layout = dbc.Container([
     dcc.Store(id="show-mine-toggle", data=False),  # Default to False (All Submissions)
     dcc.Store(id="selected-restaurant"),  # Store for clicked restaurant info
     dcc.Store(id="place-data"),  # Google Places data for current form selection
+    dcc.Store(id="places-results"),  # Cached search results from last query
     dbc.Modal(
         [
             dbc.ModalHeader(dbc.ModalTitle(id="profile-title")),
@@ -547,18 +550,16 @@ app.layout = dbc.Container([
                             "Steak", "Sushi", "Pizza", "Burgers", "Pasta", "Indian", "Chinese", "Thai", "Mexican", "Korean", "BBQ", "Seafood", "Vegan", "Middle Eastern", "French", "Spanish", "Vietnamese", "Greek", "Turkish", "Lebanese", "Caribbean", "African", "Tapas", "Deli", "Bakery", "Cafe", "Japanese", "Wine Bar", "British", "Pub", "Other"
                         ]], value="Steak", searchable=True),
                         dbc.Label("Name"),
-                        dbc.Input(id="name", type="text", maxLength=100, required=True),
-                        dbc.Label("Search Google Places", style={"marginTop": 8, "fontSize": "0.85rem", "color": "#555"}),
                         dcc.Dropdown(
                             id="places-search",
                             options=[],
                             value=None,
                             searchable=True,
                             clearable=True,
-                            placeholder="Type to search for restaurant on Google...",
-                            style={"fontSize": "0.9rem"},
+                            placeholder="Search for a restaurant...",
                         ),
                         html.Div(id="google-info-card", style={"marginTop": 4}),
+                        dbc.Input(id="name", type="text", maxLength=100, required=True, style={"display": "none"}),
                         dbc.Label("Location", style={"marginTop": 8}),
                         dcc.Dropdown(id="location", options=[{"label": c, "value": c} for c in ["London", "New York", "Paris", "Tokyo", "Berlin", "Sydney", "Rome", "Toronto", "San Francisco", "Singapore"]], value="London", searchable=True),
                         html.Br(),
@@ -1243,15 +1244,17 @@ def update_show_mine_toggle(radio_value):
 # --- Google Places: populate dropdown options as user types ---
 @app.callback(
     Output("places-search", "options"),
+    Output("places-results", "data"),
     Input("places-search", "search_value"),
     State("location", "value"),
     prevent_initial_call=True,
 )
 def update_places_options(search_value, location):
     if not search_value or len(search_value) < 4:
-        return []
+        return [], {}
     results = search_places(search_value, location)
-    return [{"label": f"{r['name']} — {r['address']}", "value": r["place_id"]} for r in results]
+    options, lookup = _places_to_options(results)
+    return options, lookup
 
 
 # --- Google Places: on place selected, fill name/location and store place data ---
@@ -1259,33 +1262,24 @@ def update_places_options(search_value, location):
     Output("place-data", "data"),
     Output("name", "value"),
     Output("location", "value"),
+    Output("google-info-card", "children"),
     Input("places-search", "value"),
+    State("places-results", "data"),
     State("location", "value"),
     prevent_initial_call=True,
 )
-def on_place_selected(place_id, current_location):
-    if not place_id:
-        return None, dash.no_update, dash.no_update
-    details = get_place_details(place_id)
+def on_place_selected(place_id, cached_results, current_location):
+    if not place_id or not cached_results:
+        return None, "", dash.no_update, ""
+    details = cached_results.get(place_id)
     if not details:
-        return None, dash.no_update, dash.no_update
+        return None, "", dash.no_update, ""
     detected_city = city_from_address(details.get("address", ""))
     new_location = detected_city if detected_city else current_location
-    return details, details.get("name", ""), new_location
-
-
-# --- Google Places: render info card when place data changes ---
-@app.callback(
-    Output("google-info-card", "children"),
-    Input("place-data", "data"),
-    prevent_initial_call=True,
-)
-def render_google_info(place_data):
-    if not place_data:
-        return ""
-    rating = place_data.get("rating")
-    review_count = place_data.get("review_count")
-    price_level = place_data.get("price_level")
+    # Build info card
+    rating = details.get("rating")
+    review_count = details.get("review_count")
+    price_level = details.get("price_level")
     parts = []
     if rating is not None:
         filled = round(rating)
@@ -1293,15 +1287,16 @@ def render_google_info(place_data):
         parts.append(html.Span(f"{rating} {stars}", style={"color": "#f5a623", "fontWeight": "bold"}))
     if review_count is not None:
         parts.append(html.Span(f"  {review_count:,} reviews", style={"color": "#555"}))
-    if price_level is not None:
+    if price_level is not None and price_level > 0:
         parts.append(html.Span("  " + "$" * price_level, style={"color": "#555"}))
-    if not parts:
-        return dbc.Alert("No Google rating data available.", color="secondary", style={"padding": "4px 10px", "fontSize": "0.85rem"})
-    return dbc.Alert(
-        [html.Strong("Google:  ")] + parts,
-        color="info",
-        style={"padding": "5px 10px", "fontSize": "0.85rem"},
-    )
+    info_card = ""
+    if parts:
+        info_card = dbc.Alert(
+            [html.Strong("Google:  ")] + parts,
+            color="info",
+            style={"padding": "5px 10px", "fontSize": "0.85rem"},
+        )
+    return details, details.get("name", ""), new_location, info_card
 
 
 # --- Enable/disable submit button based on form validity and login ---
