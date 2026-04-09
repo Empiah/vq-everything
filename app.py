@@ -123,6 +123,7 @@ class Submission(Base):
     google_rating = sa.Column(sa.Float, nullable=True)
     google_review_count = sa.Column(sa.Integer, nullable=True)
     google_price_level = sa.Column(sa.Integer, nullable=True)
+    google_address = sa.Column(sa.String, nullable=True)
 
 class SubmissionUpvote(Base):
     __tablename__ = "submission_upvotes"
@@ -161,6 +162,7 @@ _google_cols = [
     ("google_rating", "FLOAT"),
     ("google_review_count", "INTEGER"),
     ("google_price_level", "INTEGER"),
+    ("google_address", "VARCHAR"),
 ]
 for _col, _type in _google_cols:
     try:
@@ -1022,8 +1024,33 @@ def display_profile_modal(clickData, close_clicks, is_open, selected_data):
                     html.Td(f"{final_weight:.1f}%", style={"color": prussian_blue, "fontWeight": 600}),
                     html.Td(upvote_btn),
                 ]))
+            # Build Google info block from the first submission that has Google data
+            google_info = None
+            for _s in subs:
+                if _s.google_rating is not None or _s.google_address:
+                    _parts = []
+                    if _s.google_rating is not None:
+                        _filled = round(_s.google_rating)
+                        _stars = "★" * _filled + "☆" * (5 - _filled)
+                        _parts.append(html.Span(f"{_s.google_rating} {_stars}", style={"color": "#f5a623", "fontWeight": "bold", "fontSize": 15}))
+                    if _s.google_review_count is not None:
+                        _parts.append(html.Span(f"  {_s.google_review_count:,} reviews", style={"color": "#555", "fontSize": 13}))
+                    if _s.google_price_level:
+                        _parts.append(html.Span("  " + "$" * _s.google_price_level, style={"color": "#555", "fontSize": 13}))
+                    _rows = []
+                    if _parts:
+                        _rows.append(html.Div(_parts, style={"marginBottom": 4}))
+                    if _s.google_address:
+                        _rows.append(html.Div(f"📍 {_s.google_address}", style={"color": "#555", "fontSize": 13}))
+                    if _rows:
+                        google_info = html.Div(_rows, style={
+                            "marginBottom": 10, "marginTop": 4, "padding": "6px 10px",
+                            "background": "#f0f7ff", "borderRadius": 6, "border": "1px solid #cce0ff"
+                        })
+                    break
             body = html.Div([
                 html.H5(f"Category: {category}"),
+                google_info or html.Div(),
                 html.Div([
                     html.Div([
                         html.Strong("Weighted Value: "),
@@ -1182,8 +1209,32 @@ def fast_upvote_refresh(n_clicks_list, selected_data, profile_body):
             html.Td(f"{final_weight:.1f}%", style={"color": prussian_blue, "fontWeight": 600}),
             html.Td(upvote_btn),
         ]))
+    google_info = None
+    for _s in subs:
+        if _s.google_rating is not None or _s.google_address:
+            _parts = []
+            if _s.google_rating is not None:
+                _filled = round(_s.google_rating)
+                _stars = "★" * _filled + "☆" * (5 - _filled)
+                _parts.append(html.Span(f"{_s.google_rating} {_stars}", style={"color": "#f5a623", "fontWeight": "bold", "fontSize": 15}))
+            if _s.google_review_count is not None:
+                _parts.append(html.Span(f"  {_s.google_review_count:,} reviews", style={"color": "#555", "fontSize": 13}))
+            if _s.google_price_level:
+                _parts.append(html.Span("  " + "$" * _s.google_price_level, style={"color": "#555", "fontSize": 13}))
+            _rows = []
+            if _parts:
+                _rows.append(html.Div(_parts, style={"marginBottom": 4}))
+            if _s.google_address:
+                _rows.append(html.Div(f"📍 {_s.google_address}", style={"color": "#555", "fontSize": 13}))
+            if _rows:
+                google_info = html.Div(_rows, style={
+                    "marginBottom": 10, "marginTop": 4, "padding": "6px 10px",
+                    "background": "#f0f7ff", "borderRadius": 6, "border": "1px solid #cce0ff"
+                })
+            break
     body = html.Div([
         html.H5(f"Category: {selected_data.get('category', '')}"),
+        google_info or html.Div(),
         html.Div([
             html.Div([
                 html.Strong("Weighted Value: "),
@@ -1375,6 +1426,7 @@ def handle_submit(n_clicks, value, quality, type_, category, name, location, pla
             data["google_rating"] = place_data.get("rating")
             data["google_review_count"] = place_data.get("review_count")
             data["google_price_level"] = place_data.get("price_level")
+            data["google_address"] = place_data.get("address")
         add_submission(data)
         # Reset the places search on success (clears name + info card via on_place_selected)
         return dbc.Alert("Submission successful!", color="success"), None, []
